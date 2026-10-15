@@ -353,7 +353,7 @@ function AMT(n)   { return window.KLSMoney ? window.KLSMoney.amount(n) : '₦' +
   <div class="ann-box">
  <div class="ann-icon"><svg class="icon i-megaphone" aria-hidden="true"><use href="#i-megaphone"/></svg></div>
  <h2>Announcement <svg class="icon i-rocket" aria-hidden="true"><use href="#i-rocket"/></svg></h2>
-    <p><b>Server 1 is powered by NovaSolution.</b> Choose a NovaSolution server, then a country and service from its live catalog.</p>
+    <p><b>Pick a server</b>, then a country and service. Live stock and prices are shown before you pay.</p>
     <button class="ann-btn" onclick="dismissAnnouncement()">Got it</button>
   </div>
 </div>
@@ -396,7 +396,7 @@ function AMT(n)   { return window.KLSMoney ? window.KLSMoney.amount(n) : '₦' +
   </div>
 
   <style>
-    /* Server switcher — Server 1 (NovaSolution) vs Server 2 (GrizzlySMS: all services) */
+    /* Server switcher — Server 1 vs Server 2 */
     .srv-tabs{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}
     .srv-tab{flex:1 1 150px;padding:12px 10px;border-radius:12px;border:1px solid var(--border2,#2a2a40);
       background:transparent;color:inherit;font:inherit;font-weight:700;cursor:pointer;text-align:left;line-height:1.35}
@@ -505,7 +505,7 @@ function AMT(n)   { return window.KLSMoney ? window.KLSMoney.amount(n) : '₦' +
         <span class="srv-ico"><svg class="icon i-smartphone" aria-hidden="true"><use href="#i-smartphone"/></svg></span>
         <span class="srv-body">
           <span class="online-pill" id="srvPill1"><span class="pdot"></span>Online</span>
-          <h4>Server 1 — NovaSolution</h4>
+          <h4>Server 1</h4>
           <span class="srv-sub">Live server catalog · countries · services · prices</span>
           <span class="srv-sub" id="srvHealth1">Checking availability…</span>
         </span>
@@ -558,9 +558,9 @@ function AMT(n)   { return window.KLSMoney ? window.KLSMoney.amount(n) : '₦' +
     </div>
 
     <div id="numPickerForm">
-      <div class="step-label">Step 1 — Select a NovaSolution server</div>
+      <div class="step-label">Step 1 — Select a server</div>
       <div class="select-tile" style="margin-bottom:12px">
-        <div class="st-icon">🖥️</div><div class="st-body"><div class="st-label">NovaSolution Server</div><div class="st-value">Choose the server that offers your service</div></div>
+        <div class="st-icon">🖥️</div><div class="st-body"><div class="st-label">Server</div><div class="st-value">Choose the server that offers your service</div></div>
         <select id="numNovaServerSelect" onchange="onNovaServerChange()"><option value="">Loading servers…</option></select>
       </div>
       <div class="step-label">Step 2 — Search &amp; pick the country</div>
@@ -876,7 +876,7 @@ async function loadNumOptions() {
       req('/api/numbers/nova-servers', 'GET', null, false),
       req('/api/numbers/live-countries', 'GET', null, false)
     ]);
-    if (!numNovaServers.length || !numCountries.length) throw new Error('No servers or countries returned by NovaSolution.');
+    if (!numNovaServers.length || !numCountries.length) throw new Error('No servers or countries are available right now.');
     serverSelect.innerHTML = '<option value="">Select a server…</option>' + numNovaServers.map(s => `<option value="${Number(s.id)}">${esc(s.name)}</option>`).join('');
     const countrySelect = document.getElementById('numCountrySelect');
     countrySelect.innerHTML = '<option value="">Select a country…</option>' + numCountries.map(c => `<option value="${esc(c.code)}">${flagEmoji(c.code)} ${esc(c.name)}${c.pinned ? ' ⭐' : ''}</option>`).join('');
@@ -884,7 +884,7 @@ async function loadNumOptions() {
     emptyState.style.display = 'none'; pickerForm.style.display = 'block'; clearS1Selection();
   } catch (e) {
     emptyState.style.display = 'block'; pickerForm.style.display = 'none';
-    const msg = emptyState.querySelector('p:last-child'); if (msg) msg.textContent = e.message || 'Could not load NovaSolution catalog. Check API configuration.';
+    const msg = emptyState.querySelector('p:last-child'); if (msg) msg.textContent = e.message || 'Could not load servers right now. Please try again or contact the administrator.';
   }
 }
 function onNovaServerChange() {
@@ -900,7 +900,7 @@ function onNovaServerChange() {
 // back, so an empty list here just means "nothing priced for this country yet", not an error.
 async function onNumCountryChange() {
   const country = document.getElementById('numCountrySelect').value;
-  if (!selectedNovaServerId) { showToast('Select a NovaSolution server first'); return; }
+  if (!selectedNovaServerId) { showToast('Select a server first'); return; }
   const providerSelect = document.getElementById('numProviderSelect');
   const countryValueText = document.getElementById('numCountryValueText');
   const providerValueText = document.getElementById('numProviderValueText');
@@ -1288,11 +1288,11 @@ async function loadNumServerHealth() {
 // Per-server guidance shown only after the customer taps that server.
 const SERVER_GUIDE = {
   server1: {
-    title: 'NovaSolution — Live Number Catalog',
-    notice: '<b>NovaSolution live catalog:</b> choose a provider server first, then a country and service. The price is confirmed again by the backend before your wallet is charged.',
+    title: 'Server 1 — Live Numbers',
+    notice: '<b>Live numbers:</b> choose a server first, then a country and service. The price is confirmed again by the backend before your wallet is charged.',
     steps: [
       'Install and open the app you want to verify <i>before</i> buying.',
-      'Select the <b>NovaSolution server</b> that contains the service.',
+      'Select the <b>server</b> that contains the service.',
       'Search and pick the <b>country</b>.',
       'Search and pick the <b>service</b> — each one shows its icon and live price.',
       'Tap <b>Buy This Number</b> — your wallet is charged and the number is reserved for you.',
@@ -1345,7 +1345,7 @@ function selectServer(id) {
   const bar = document.getElementById('numTopBar');
   bar.style.display = 'flex';
   document.getElementById('numTopBarTitle').textContent =
-    id === 'server2' ? 'Server 2 — GrizzlySMS' : 'Server 1 — NovaSolution';
+    id === 'server2' ? 'Server 2' : 'Server 1';
 
   document.getElementById('numPickStep').style.display = id === 'server1' ? 'block' : 'none';
   document.getElementById('numPickStep2').style.display = id === 'server2' ? 'block' : 'none';
@@ -1982,7 +1982,7 @@ function dismissAnnouncement() {
            'srcset="https://flagcdn.com/w80/' + c + '.png 2x" ' +
            'onerror="this.outerHTML=\'<span class=&quot;app-ico-fb&quot;>🌍</span>\'"/>';
   }
-  // Brand marks for NovaSolution services (the catalog may not include icon URLs).
+  // Brand marks for services (the catalog may not include icon URLs).
   const BRAND = {
     whatsapp: 'whatsapp', telegram: 'telegram', google: 'google', gmail: 'gmail', youtube: 'youtube',
     instagram: 'instagram', facebook: 'facebook', tiktok: 'tiktok', twitter: 'x', x: 'x',

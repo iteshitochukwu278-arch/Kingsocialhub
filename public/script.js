@@ -23,7 +23,7 @@ const PAGE_TO_PATH = {
   // Standalone pages that ship their own HTML file. These MUST be listed here, otherwise
   // pageForPath() returns null, the router falls back to 'home', #page-home does not exist
   // in that file and every .page div stays hidden -> completely blank page.
-  boost: '/boost', 'boost-history': '/boost-history'
+  boost: '/boost', boost1: '/boost1', boost2: '/boost2', 'boost-services': '/boost-services', 'boost-history': '/boost-history'
 };
 const PATH_TO_PAGE = Object.fromEntries(Object.entries(PAGE_TO_PATH).map(([k,v]) => [v,k]));
 // '/marketplace' etc. are absolute site paths per King Social Hub's domain convention
@@ -101,11 +101,16 @@ document.addEventListener('DOMContentLoaded', () => {
   applySiteLinks();
   updateNav();
   initTheme();
-  const initialPage = pageForPath(window.location.pathname) || (token ? 'home' : 'login');
+  // Standalone pages (e.g. /boost1) ship their own .page div. If the path is not in the router
+  // map we must NOT fall back to 'home' (that sent logged-in users to /dashboard). Keep the page.
+  const _mapped = pageForPath(window.location.pathname);
+  const _standalone = !_mapped && window.location.pathname !== '/' && !document.getElementById('page-home') && document.querySelector('.page');
+  const initialPage = _standalone ? (_standalone.id || '').replace(/^page-/, '') || 'home' : (_mapped || (token ? 'home' : 'login'));
+  if (_standalone) { _standalone.classList.add('active'); }
   // A returning logged-in user landing on '/' used to see this SPA's old marketing/home
   // section — send them straight to the real dashboard instead.
-  if (token && initialPage === 'home') { window.location.replace('/dashboard'); return; }
-  showPage(initialPage, { replace: true });
+  if (token && initialPage === 'home' && !_standalone) { window.location.replace('/dashboard'); return; }
+  if (!_standalone) showPage(initialPage, { replace: true });
   handleGoogleRedirectResult();
   trackVisit();
   loadAds();
