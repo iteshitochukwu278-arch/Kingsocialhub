@@ -882,6 +882,7 @@ async function loadBalance() {
   if (!bnToken) { el.textContent = '—'; return; }
   try {
     const me = await req('/api/user/me', 'GET', null, true);
+    window._numBal = Number(me.balance) || 0;
     el.textContent = AMT(me.balance);
   } catch (e) { el.textContent = '—'; }
 }
@@ -1129,6 +1130,8 @@ async function buyNumber() {
   const _cty = numCountries.find(x => x.code === country);
   if (!await kslConfirm(`Buy a ${match.provider} number${_cty ? ' (' + _cty.name + ')' : ''}${_srv ? ' on ' + _srv.name : ''} for ${PRICE(match.price)}? It is deducted from your wallet now and automatically refunded if no code arrives within 20 minutes. You can also cancel for a full refund while you wait.`, { title: 'Confirm purchase', okText: 'Yes, buy it', cancelText: 'No, go back' })) return;
 
+  // Show the deduction on screen immediately — the server takes the money before it orders anything.
+  try { if (typeof window._numBal === 'number') document.getElementById('numBalDisplay').textContent = AMT(Math.max(0, window._numBal - Number(match.price || 0))); } catch (_) {}
   btn.disabled = true; btn.textContent = 'Placing your order…'; setFb(fb, 'Placing your order — this can take up to a minute. Please don’t close the page.', 'ok');
   try {
     const order = await req('/api/numbers/buy', 'POST', { country, serviceId, provider: match.provider, serverId: Number(selectedNovaServerId), expectedPrice: match.price }, true, 90000);
@@ -1147,6 +1150,7 @@ async function buyNumber() {
     } else {
  setFb(fb, ' ' + e.message, 'err');
     }
+    loadBalance();
     try { fb.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {}
   } finally {
  btn.disabled = false; btn.textContent = ' Buy This Number';
