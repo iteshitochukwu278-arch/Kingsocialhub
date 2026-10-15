@@ -1444,7 +1444,7 @@ const anyAdminAuth = async (req, res, next) => {
 };
 // Marketplace 2 (RakibSocials API) + marketplace on/off switches — see lib/market2.js
 require('./lib/market2').register(app, { mongoose, User, Transaction, auth, anyAdminAuth, sendAdminEmail });
-require('./lib/boost2')({ app, mongoose, User, Transaction, auth, anyAdminAuth });
+require('./lib/boost2')({ app, mongoose, User, Transaction, auth, anyAdminAuth, novaGate });
 function sanitizeUser(u) {
  return {
  id: u._id, name: u.name, email: u.email, balance: u.balance || 0,
@@ -4582,8 +4582,8 @@ app.post('/api/v1/buy-multi/:id', apiKeyAuth, async (req, res) => {
 // Developer API — same live services as Server 1, but with a slightly smaller profit (cheaper).
 app.get('/api/v1/numbers/countries', apiKeyAuth, async (req, res) => {
  try {
-   const payload = await novaRequest('GET', '/catalog/numbers', { params: { scope: 'global' } });
-   res.json(novaCountryRows(payload).map(c => ({ code: c.code || c.country_code || c.iso2, name: c.name || c.country_name || c.label })));
+   const payload = await novaGetCatalog({ scope: 'global' });
+   res.json(novaCountryRows(payload).map(c => ({ code: c.iso || c.code || c.country_code || c.iso2, name: c.name || c.country_name || c.label })));
  } catch (e) { novaErrorResponse(res, e); }
 });
 app.get('/api/v1/numbers/options', apiKeyAuth, async (req, res) => {
@@ -4592,7 +4592,7 @@ app.get('/api/v1/numbers/options', apiKeyAuth, async (req, res) => {
    const serverId = Number(req.query.serverId || req.query.server_id || 0);
    const resolved = await novaResolveCountry(country);
    const params = { scope: resolved.scope }; if (resolved.country) params.country = resolved.country;
-   const payload = await novaRequest('GET', '/catalog/numbers', { params });
+   const payload = await novaGetCatalog(params);
    const cfg = await getNumberServerConfig();
    res.json(novaServiceRows(payload)
      .filter(s => !serverId || Number(s.server_id ?? s.serverId) === serverId)
@@ -4607,7 +4607,7 @@ app.get('/api/v1/numbers/options', apiKeyAuth, async (req, res) => {
 async function novaFindServiceByName(countryCode, provider, serverId) {
   const resolved = await novaResolveCountry(countryCode);
   const params = { scope: resolved.scope }; if (resolved.country) params.country = resolved.country;
-  const rows = novaServiceRows(await novaRequest('GET', '/catalog/numbers', { params }));
+  const rows = novaServiceRows(await novaGetCatalog(params));
   const want = String(provider || '').trim().toLowerCase();
   const matches = rows.filter(s => [s.name, s.service, s.application, s.code].some(v => String(v || '').trim().toLowerCase() === want)
     && (!serverId || Number(s.server_id ?? s.serverId) === serverId) && Number(s.price_minor) >= 0);
@@ -5733,6 +5733,15 @@ const novaAxios = axios.create({
     ...(process.env.NOVA_API_KEY ? { Authorization: `Bearer ${process.env.NOVA_API_KEY}` } : {})
   }
 });
+// The provider allows 60 requests/minute per key. Every call (numbers, Boost 2, purchases) goes
+// through this gate so we never exceed ~50/minute no matter how many things run together.
+var _novaGateNext = 0;
+async function novaGate() {
+  const now = Date.now();
+  const at = Math.max(now, _novaGateNext);
+  _novaGateNext = at + 1200;
+  if (at > now) await new Promise(r => setTimeout(r, at - now));
+}
 async function novaRequest(method, path, options = {}) {
   if (!process.env.NOVA_API_KEY) {
     const e = new Error('This service is not available right now. Please contact the administrator.');
@@ -5740,6 +5749,7 @@ async function novaRequest(method, path, options = {}) {
     throw e;
   }
   try {
+    await novaGate();
     const response = await novaAxios.request({ method, url: path, ...options });
     return response.data;
   } catch (err) {
@@ -5748,6 +5758,7 @@ async function novaRequest(method, path, options = {}) {
       (status === 502 ? 'The service could not be reached. Please try again.' : 'Request failed. Please try again.');
     const e = new Error(message);
     e.status = status;
+    e.retryAfter = Number(err.response?.headers?.['retry-after']) || 0;
     e.provider = true;
     // No HTTP response (timeout / dropped connection), a 5xx, or 408 => we cannot know whether Nova acted on the request.
     e.ambiguous = !err.response || status >= 500 || status === 408;
@@ -5777,15 +5788,21 @@ function novaServerRows(payload) {
   const d = novaUnwrap(payload);
   return Array.isArray(d.servers) ? d.servers : (Array.isArray(payload?.servers) ? payload.servers : []);
 }
+function novaCountryParam(c) {
+  // The provider accepts an ISO code or a name. ISO is the most reliable.
+  const iso = String(c.iso || c.iso2 || c.country_code || '').trim();
+  if (iso) return iso.toUpperCase();
+  return String(c.slug || c.country_slug || c.api_value || c.name || c.country_name || c.label || c.code || '').trim().toLowerCase().replace(/\s+/g, '-');
+}
 async function novaResolveCountry(rawCountry) {
   const raw = String(rawCountry || '').trim();
   if (/^(us|usa|united states)$/i.test(raw)) return { scope: 'usa', country: undefined };
-  const payload = await novaRequest('GET', '/catalog/numbers', { params: { scope: 'global' } });
+  const payload = await novaGetCatalog({ scope: 'global' });
   const rows = novaCountryRows(payload);
-  const match = rows.find(c => [c.code, c.country_code, c.iso2, c.id, c.slug, c.name, c.country_name, c.label]
+  const match = rows.find(c => [c.iso, c.code, c.country_code, c.iso2, c.id, c.slug, c.name, c.country_name, c.label]
     .some(v => String(v || '').trim().toLowerCase() === raw.toLowerCase()));
-  const apiCountry = match ? (match.slug || match.country_slug || match.api_value || match.name || match.country_name || match.label || match.code || raw) : raw;
-  return { scope: 'global', country: String(apiCountry).trim().toLowerCase().replace(/\s+/g, '-') };
+  const apiCountry = match ? novaCountryParam(match) : raw.toLowerCase().replace(/\s+/g, '-');
+  return { scope: 'global', country: apiCountry };
 }
 function novaServicePriceNgn(service, cfg, opts) {
   // Nova's price_minor is a minor-unit amount; convert to major units before markup.
@@ -5831,7 +5848,7 @@ app.get('/api/numbers/nova-servers', optionalAuth, async (req, res) => {
  try {
    // 'usa' scope = servers that sell USA numbers; 'global' scope = all-countries servers.
    // Keep the provider's own server names (e.g. "USA Server 1"), minus any brand word.
-   const scopes = await Promise.allSettled(['usa', 'global'].map(scope => novaRequest('GET', '/catalog/numbers', { params: { scope } })));
+   const scopes = await Promise.allSettled(['usa', 'global'].map(scope => novaGetCatalog({ scope })));
    if (scopes.every(r => r.status === 'rejected')) throw scopes[0].reason;
    const clean = n => String(n || '').replace(/nova\s*solution|novasolution|nova/ig, '').replace(/\s{2,}/g, ' ').replace(/^[\s\-–—:·|]+|[\s\-–—:·|]+$/g, '').trim();
    const seen = new Map();
@@ -5848,11 +5865,11 @@ app.get('/api/numbers/nova-servers', optionalAuth, async (req, res) => {
      for (const sv of novaServerRows(scopes[i].value)) add(sv.id, sv.name || sv.label || sv.title, scope);
      for (const row of novaServiceRows(scopes[i].value)) add(row.server_id ?? row.serverId, row.server_name || row.server, scope);
    });
-   let usaN = 0, allN = 0;
    const servers = [...seen.values()].sort((x, y) => (x.scope === y.scope ? x.id - y.id : (x.scope === 'usa' ? -1 : 1)))
      .map(sv => {
-       const isUsa = sv.scope === 'usa' || /\b(usa|united states)\b/i.test(sv.name);
-       const name = sv.name || (isUsa ? `USA Server ${++usaN}` : `All Countries Server ${++allN}`);
+       const isUsa = sv.scope === 'usa';
+       const base = sv.name || `Server ${sv.id}`;
+       const name = isUsa ? (/usa|united states/i.test(base) ? base : `USA ${base}`) : (/^all\b/i.test(base) ? base : `All Countries ${base}`);
        return { id: sv.id, name, scope: isUsa ? 'usa' : 'global' };
      });
    res.set('Cache-Control', 'no-store'); res.json(servers);
@@ -5860,35 +5877,115 @@ app.get('/api/numbers/nova-servers', optionalAuth, async (req, res) => {
 });
 app.get('/api/numbers/live-countries', optionalAuth, async (req, res) => {
  try {
-   const usa = novaUnwrap(await novaRequest('GET', '/catalog/numbers', { params: { scope: 'usa' } }));
-   const global = novaUnwrap(await novaRequest('GET', '/catalog/numbers', { params: { scope: 'global' } }));
+   const usa = await novaGetCatalog({ scope: 'usa' });
+   const global = await novaGetCatalog({ scope: 'global' });
    const rows = [...novaCountryRows(usa), ...novaCountryRows(global)];
    const unique = new Map();
    for (const c of rows) {
-     const code = String(c.code || c.country_code || c.iso2 || c.id || '').trim();
+     const code = String(c.iso || c.code || c.country_code || c.iso2 || c.id || '').trim();
      const name = String(c.name || c.country_name || c.label || code).trim();
      if (code && name && !unique.has(code.toLowerCase())) unique.set(code.toLowerCase(), { code, name, flag: countryFlag(name), pinned: /^(us|usa|united states|ca|canada)$/i.test(code) || /united states|canada/i.test(name) });
    }
    res.set('Cache-Control', 'no-store'); res.json([...unique.values()].sort((a,b)=>(b.pinned-a.pinned)||a.name.localeCompare(b.name)));
  } catch (e) { novaErrorResponse(res, e); }
 });
-// Reads every page of the number catalog (the provider may paginate) and returns all service rows.
-async function novaCatalogServices(params) {
-  const first = await novaRequest('GET', '/catalog/numbers', { params });
-  let rows = novaServiceRows(first);
+// ── Catalog cache ───────────────────────────────────────────────────────────
+// The provider's catalog is stored in our database. Customers read the stored copy, so opening
+// the page never hits the provider (no more rate-limit errors). It is only re-pulled when the
+// admin syncs, when a customer taps Refresh (at most once per cooldown), or when nothing is
+// stored yet. If a re-pull fails, the previously stored copy keeps being served.
+const NovaCache = mongoose.models.NovaCache || mongoose.model('NovaCache', new mongoose.Schema({
+  key: { type: String, unique: true, index: true },
+  payload: { type: mongoose.Schema.Types.Mixed },
+  syncedAt: { type: Date, default: Date.now },
+  error: { type: String, default: '' }
+}, { minimize: false }));
+const NOVA_REFRESH_COOLDOWN_MS = 30 * 1000;
+const _novaInflight = new Map();
+const _sleep = ms => new Promise(r => setTimeout(r, ms));
+function novaCacheKey(params) {
+  if (params.scope === 'usa') return 'numbers:usa';
+  return params.country ? 'numbers:c:' + params.country : 'numbers:global';
+}
+async function novaRequestRetry(method, path, options) {
+  for (let attempt = 0; ; attempt++) {
+    try { return await novaRequest(method, path, options); }
+    catch (e) { if (e.status === 429 && attempt < 3) { await _sleep(Math.min(65, e.retryAfter || 20) * 1000); continue; } throw e; }
+  }
+}
+// Reads every page of a number catalog (the provider may paginate).
+async function novaFetchCatalogFull(params) {
+  const first = await novaRequestRetry('GET', '/catalog/numbers', { params });
+  let services = novaServiceRows(first);
   let d = novaUnwrap(first), page = 1;
   while ((d.has_more || first?.has_more || d.next_page) && page < 30) {
     page++;
     let next;
-    try { next = await novaRequest('GET', '/catalog/numbers', { params: { ...params, page } }); } catch (e) { break; }
+    try { next = await novaRequestRetry('GET', '/catalog/numbers', { params: { ...params, page } }); } catch (e) { break; }
     const more = novaServiceRows(next);
     if (!more.length) break;
-    rows = rows.concat(more);
+    services = services.concat(more);
     d = novaUnwrap(next);
     if (!d.has_more && !next?.has_more && !d.next_page) break;
   }
-  return rows;
+  return { servers: novaServerRows(first), countries: novaCountryRows(first), services };
 }
+async function novaGetCatalog(params, opts = {}) {
+  const key = novaCacheKey(params);
+  const doc = await NovaCache.findOne({ key }).lean();
+  const age = doc ? Date.now() - new Date(doc.syncedAt).getTime() : Infinity;
+  const need = !doc || (opts.refresh && age > NOVA_REFRESH_COOLDOWN_MS) || (opts.fresh && age > 60 * 1000);
+  if (!need) return { ...doc.payload, syncedAt: doc.syncedAt, stale: false };
+  let job = _novaInflight.get(key);
+  if (!job) {
+    job = novaFetchCatalogFull(params).then(async payload => {
+      const syncedAt = new Date();
+      await NovaCache.updateOne({ key }, { $set: { payload, syncedAt, error: '' } }, { upsert: true });
+      return { ...payload, syncedAt, stale: false };
+    }).finally(() => _novaInflight.delete(key));
+    _novaInflight.set(key, job);
+  }
+  try { return await job; }
+  catch (e) {
+    if (doc) {
+      NovaCache.updateOne({ key }, { $set: { error: String(e.message || '').slice(0, 300) } }).catch(() => {});
+      return { ...doc.payload, syncedAt: doc.syncedAt, stale: true, error: e.message };
+    }
+    throw e;
+  }
+}
+async function novaCatalogServices(params, opts) { return (await novaGetCatalog(params, opts)).services || []; }
+
+// Admin "Sync all": pulls the server/country lists and every country's services, one at a time
+// with a short pause so the provider is never hammered. Old data stays if a country fails.
+const novaSync = { running: false, total: 0, done: 0, failed: 0, current: '', startedAt: null, finishedAt: null, message: '' };
+async function novaSyncAll() {
+  if (novaSync.running) return;
+  Object.assign(novaSync, { running: true, total: 2, done: 0, failed: 0, current: 'servers', startedAt: new Date(), finishedAt: null, message: 'Starting…' });
+  try {
+    const usa = await novaGetCatalog({ scope: 'usa' }, { refresh: true, fresh: true }); novaSync.done++;
+    const glob = await novaGetCatalog({ scope: 'global' }, { refresh: true, fresh: true }); novaSync.done++;
+    const slugs = [...new Set(novaCountryRows(glob).filter(c => !/^(us|usa)$/i.test(String(c.iso || c.code || ''))).map(novaCountryParam).filter(Boolean))];
+    novaSync.total = 2 + slugs.length;
+    for (const slug of slugs) {
+      novaSync.current = slug;
+      try {
+        const r = await novaGetCatalog({ scope: 'global', country: slug }, { refresh: true, fresh: true });
+        if (r.stale) novaSync.failed++;
+      } catch (e) { novaSync.failed++; }
+      novaSync.done++;
+    }
+    novaSync.message = `Synced. ${usa.services.length} USA service(s), ${slugs.length} countr${slugs.length === 1 ? 'y' : 'ies'}${novaSync.failed ? `, ${novaSync.failed} could not be refreshed (old data kept)` : ''}.`;
+  } catch (e) {
+    novaSync.message = 'Sync failed: ' + (e.message || 'provider unreachable') + ' — previously stored services are still shown to customers.';
+  } finally { novaSync.running = false; novaSync.current = ''; novaSync.finishedAt = new Date(); }
+}
+app.post('/api/admin/numbers/sync', anyAdminAuth, (req, res) => { if (!novaSync.running) novaSyncAll().catch(() => {}); res.status(202).json({ ...novaSync }); });
+app.get('/api/admin/numbers/sync-status', anyAdminAuth, async (req, res) => {
+  const stored = await NovaCache.countDocuments({ key: /^numbers:/ }).catch(() => 0);
+  const last = await NovaCache.findOne({ key: /^numbers:/ }).sort({ syncedAt: -1 }).select('syncedAt').lean().catch(() => null);
+  res.json({ ...novaSync, stored, lastSyncedAt: last?.syncedAt || null });
+});
 app.get('/api/numbers/live-services', optionalAuth, async (req, res) => {
  try {
    const country = String(req.query.country || '').trim();
@@ -5896,7 +5993,8 @@ app.get('/api/numbers/live-services', optionalAuth, async (req, res) => {
    const serverId = Number(req.query.serverId || req.query.server_id || 0);
    const resolved = await novaResolveCountry(country);
    const params = { scope: resolved.scope }; if (resolved.country) params.country = resolved.country;
-   const services = await novaCatalogServices(params);
+   const cat = await novaGetCatalog(params, { refresh: String(req.query.refresh || '') === '1' });
+   const services = cat.services || [];
    const cfg = await getNumberServerConfig();
    const sidOf = s => Number(s.server_id ?? s.serverId ?? s.server?.id);
    // Only filter by server when the rows actually say which server they belong to.
@@ -5910,7 +6008,8 @@ app.get('/api/numbers/live-services', optionalAuth, async (req, res) => {
        serviceId: String(s.id ?? s.service_id), provider: String(s.name || s.service || s.application || `Service ${s.id}`),
        serverId: sidOf(s), serverName: String(s.server_name || s.server?.name || ''),
        price: novaServicePriceNgn({ ...s, price_minor: minor }, cfg), costNgn: Number.isFinite(minor) ? minor / 100 : 0, priceMinor: Number.isFinite(minor) ? minor : 0,
-       emoji: serviceEmoji(s.code || s.name, s.name), icon: serviceIconUrl(s.code || s.name, s.name), rawName: s.name || s.service || ''
+       emoji: serviceEmoji(s.code || s.name, s.name), icon: serviceIconUrl(s.code || s.name, s.name), rawName: s.name || s.service || '',
+       syncedAt: cat.syncedAt, stale: !!cat.stale
      };
    }).filter(x => x.price != null && x.price > 0));
  } catch (e) { novaErrorResponse(res, e); }
@@ -5948,7 +6047,7 @@ async function novaPurchaseNumber({ userId, serviceId, serverId, countryCode, ex
   }
   const resolvedCountry = await novaResolveCountry(countryCode);
   const catalogParams = { scope: resolvedCountry.scope }; if (resolvedCountry.country) catalogParams.country = resolvedCountry.country;
-  const services = await novaCatalogServices(catalogParams);
+  const services = await novaCatalogServices(catalogParams, { fresh: true });
   const sidOf = x => Number(x.server_id ?? x.serverId ?? x.server?.id);
   const hasServerInfo = services.some(x => Number.isInteger(sidOf(x)) && sidOf(x) > 0);
   let service = services.find(x => Number(x.id ?? x.service_id) === serviceId && (!hasServerInfo || sidOf(x) === serverId));
@@ -6809,7 +6908,11 @@ app.get('/api/admin/numbers/nova-balance', anyAdminAuth, async (req, res) => {
  try { res.json(novaUnwrap(await novaRequest('GET', '/balance'))); } catch (e) { novaErrorResponse(res, e); }
 });
 app.get('/api/admin/numbers/nova-catalog', anyAdminAuth, async (req, res) => {
- try { const scope = String(req.query.scope || 'usa') === 'global' ? 'global' : 'usa'; res.json(await novaRequest('GET', '/catalog/numbers', { params: { scope, ...(req.query.country ? { country: String(req.query.country) } : {}) } })); } catch (e) { novaErrorResponse(res, e); }
+ try {
+   const scope = String(req.query.scope || 'usa') === 'global' ? 'global' : 'usa';
+   const params = { scope, ...(req.query.country ? { country: String(req.query.country) } : {}) };
+   res.json(await novaGetCatalog(params, { refresh: String(req.query.refresh || '') === '1' }));
+ } catch (e) { novaErrorResponse(res, e); }
 });
 app.get('/api/admin/user-number-prices', anyAdminAuth, async (req, res) => {
  try {
