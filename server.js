@@ -4590,14 +4590,12 @@ app.get('/api/v1/numbers/options', apiKeyAuth, async (req, res) => {
  try {
    const country = String(req.query.country || 'US').trim();
    const serverId = Number(req.query.serverId || req.query.server_id || 0);
-   const resolved = await novaResolveCountry(country);
-   const params = { scope: resolved.scope }; if (resolved.country) params.country = resolved.country;
-   const payload = await novaGetCatalog(params);
+   const payload = await novaCatalogForCountry(country);
    const cfg = await getNumberServerConfig();
    res.json(novaServiceRows(payload)
      .filter(s => !serverId || Number(s.server_id ?? s.serverId) === serverId)
      .map(s => ({
-       id: s.id ?? s.service_id, serviceId: s.id ?? s.service_id, provider: s.name || s.service || s.application,
+       id: s.id ?? s.service_id, serviceId: s.id ?? s.service_id, provider: novaServiceDisplayName(s),
        serverId: Number(s.server_id ?? s.serverId), serverName: String(s.server_name || s.server || ''), country,
        price: novaServicePriceNgn(s, cfg, { api: true })
      })));
@@ -4605,11 +4603,9 @@ app.get('/api/v1/numbers/options', apiKeyAuth, async (req, res) => {
 });
 // Legacy {provider, country} callers: pick the cheapest matching service across servers.
 async function novaFindServiceByName(countryCode, provider, serverId) {
-  const resolved = await novaResolveCountry(countryCode);
-  const params = { scope: resolved.scope }; if (resolved.country) params.country = resolved.country;
-  const rows = novaServiceRows(await novaGetCatalog(params));
+  const rows = (await novaCatalogForCountry(countryCode)).services || [];
   const want = String(provider || '').trim().toLowerCase();
-  const matches = rows.filter(s => [s.name, s.service, s.application, s.code].some(v => String(v || '').trim().toLowerCase() === want)
+  const matches = rows.filter(s => [s.name, s.service, s.application, s.code, novaServiceDisplayName(s)].some(v => String(v || '').trim().toLowerCase() === want)
     && (!serverId || Number(s.server_id ?? s.serverId) === serverId) && Number(s.price_minor) >= 0);
   matches.sort((a, b) => Number(a.price_minor) - Number(b.price_minor));
   const m = matches[0];
@@ -5804,6 +5800,77 @@ async function novaResolveCountry(rawCountry) {
   const apiCountry = match ? novaCountryParam(match) : raw.toLowerCase().replace(/\s+/g, '-');
   return { scope: 'global', country: apiCountry };
 }
+
+// ── Real service names + logos ───────────────────────────────────────────────
+// Providers sometimes send short codes ("wa", "tg", "vn") instead of names. Turn those into the
+// real brand name so customers see WhatsApp / Telegram / TikTok, never a bare code.
+const NOVA_CODE_NAMES = {
+  wa: 'WhatsApp', wb: 'WhatsApp', bye: 'WhatsApp Business', tg: 'Telegram', vi: 'Viber', sg: 'Signal',
+  go: 'Google', gp: 'Google', gm: 'Gmail', yl: 'YouTube', ig: 'Instagram', ig4: 'Instagram', fb: 'Facebook',
+  tw: 'Twitter / X', x: 'Twitter / X', tk: 'TikTok', tt: 'TikTok', lf: 'TikTok', ds: 'Discord',
+  sn: 'Snapchat', li: 'LinkedIn', nf: 'Netflix', am: 'Amazon', pp: 'PayPal', ub: 'Uber', we: 'WeChat',
+  wx: 'WeChat', vk: 'VK', ok: 'Odnoklassniki', ya: 'Yandex', qq: 'Tencent QQ', st: 'Spotify',
+  tn: 'Tinder', ab: 'Airbnb', ew: 'eBay', re: 'Reddit', ts: 'Twitch', pm: 'Pinterest',
+  ot: 'Other (any service)'
+};
+const NOVA_BRAND_NAMES = [
+  [/whats\s*app/i, 'WhatsApp'], [/telegram/i, 'Telegram'], [/tik\s*tok|douyin/i, 'TikTok'], [/facebook/i, 'Facebook'],
+  [/instagram/i, 'Instagram'], [/twitter|^x$/i, 'Twitter / X'], [/gmail/i, 'Gmail'], [/youtube/i, 'YouTube'],
+  [/google/i, 'Google'], [/discord/i, 'Discord'], [/snap\s*chat/i, 'Snapchat'], [/linked\s*in/i, 'LinkedIn'],
+  [/viber/i, 'Viber'], [/we\s*chat|weixin/i, 'WeChat'], [/signal/i, 'Signal'], [/microsoft|outlook|hotmail/i, 'Microsoft'],
+  [/apple|icloud/i, 'Apple'], [/amazon/i, 'Amazon'], [/paypal/i, 'PayPal'], [/uber/i, 'Uber'], [/netflix/i, 'Netflix'],
+  [/spotify/i, 'Spotify'], [/tinder/i, 'Tinder'], [/openai|chat\s*gpt/i, 'OpenAI / ChatGPT']
+];
+function novaServiceDisplayName(s) {
+  const cands = [s?.name, s?.service, s?.application, s?.service_name, s?.display_name, s?.title, s?.label]
+    .map(v => String(v == null ? '' : v).trim()).filter(Boolean);
+  const code = String(s?.code || s?.slug || s?.short_name || '').trim().toLowerCase();
+  const codeLike = v => /^[a-z0-9]{1,3}$/i.test(v) || (v === v.toLowerCase() && /^[a-z]{1,4}\d?$/.test(v));
+  // A real descriptive name (e.g. "WhatsApp Business", "Amazon Prime") is kept as sent, just tidied.
+  const real = cands.find(v => !codeLike(v));
+  if (real) {
+    const brand = NOVA_BRAND_NAMES.find(([re]) => re.test(real));
+    if (brand && real.length <= brand[1].length + 2) return brand[1];
+    return real.replace(/[_]+/g, ' ').replace(/\s{2,}/g, ' ').replace(/\b[a-z]/g, c => c.toUpperCase()).trim();
+  }
+  for (const v of [code, ...cands.map(c => c.toLowerCase())]) if (v && NOVA_CODE_NAMES[v]) return NOVA_CODE_NAMES[v];
+  return cands[0] || (code ? code.toUpperCase() : `Service ${s?.id ?? ''}`.trim());
+}
+
+// Services for one country across EVERY server that can sell it. USA numbers can live on the
+// dedicated USA servers (scope 'usa') and also on the all-countries servers, so for the United States
+// both catalogues are merged — that is why picking "United States" on a global server used to say
+// "not available". Any one catalogue failing never hides the others.
+function novaIsUsa(raw) { return /^(us|usa|united states|united states of america)$/i.test(String(raw || '').trim()); }
+async function novaCatalogForCountry(rawCountry, opts = {}) {
+  const raw = String(rawCountry || '').trim();
+  const jobs = [];
+  if (novaIsUsa(raw)) {
+    jobs.push(novaGetCatalog({ scope: 'usa' }, opts));
+    jobs.push((async () => {
+      const g = await novaGetCatalog({ scope: 'global' });
+      const row = novaCountryRows(g).find(c => novaIsUsa(c.iso || c.iso2 || c.code || c.country_code) || novaIsUsa(c.name || c.country_name || c.label));
+      return novaGetCatalog({ scope: 'global', country: row ? novaCountryParam(row) : 'US' }, opts);
+    })());
+  } else {
+    const r = await novaResolveCountry(raw);
+    const params = { scope: 'global' }; if (r.country) params.country = r.country;
+    jobs.push(novaGetCatalog(params, opts));
+  }
+  const settled = await Promise.allSettled(jobs);
+  const ok = settled.filter(x => x.status === 'fulfilled').map(x => x.value);
+  if (!ok.length) throw settled[0].reason;
+  const seen = new Set(), services = [], servers = [], countries = [];
+  for (const cat of ok) {
+    for (const sv of (cat.services || [])) {
+      const k = `${sv.id ?? sv.service_id}:${sv.server_id ?? sv.serverId ?? sv.server?.id ?? ''}`;
+      if (!seen.has(k)) { seen.add(k); services.push(sv); }
+    }
+    servers.push(...(cat.servers || [])); countries.push(...(cat.countries || []));
+  }
+  const newest = ok.map(c => c.syncedAt).filter(Boolean).sort().pop();
+  return { services, servers, countries, syncedAt: newest, stale: ok.some(c => c.stale) };
+}
 function novaServicePriceNgn(service, cfg, opts) {
   // Nova's price_minor is a minor-unit amount; convert to major units before markup.
   const minor = Number(service?.price_minor);
@@ -5903,9 +5970,10 @@ const NovaCache = mongoose.models.NovaCache || mongoose.model('NovaCache', new m
 const NOVA_REFRESH_COOLDOWN_MS = 30 * 1000;
 const _novaInflight = new Map();
 const _sleep = ms => new Promise(r => setTimeout(r, ms));
+// v2: the old keys may hold a truncated (first-page-only) catalogue, so a new prefix forces one clean re-pull.
 function novaCacheKey(params) {
-  if (params.scope === 'usa') return 'numbers:usa';
-  return params.country ? 'numbers:c:' + params.country : 'numbers:global';
+  if (params.scope === 'usa') return 'numbers:v2:usa';
+  return params.country ? 'numbers:v2:c:' + params.country : 'numbers:v2:global';
 }
 async function novaRequestRetry(method, path, options) {
   for (let attempt = 0; ; attempt++) {
@@ -5917,16 +5985,29 @@ async function novaRequestRetry(method, path, options) {
 async function novaFetchCatalogFull(params) {
   const first = await novaRequestRetry('GET', '/catalog/numbers', { params });
   let services = novaServiceRows(first);
-  let d = novaUnwrap(first), page = 1;
-  while ((d.has_more || first?.has_more || d.next_page) && page < 30) {
+  const rowKey = r => `${r.id ?? r.service_id}:${r.server_id ?? r.serverId ?? r.server?.id ?? ''}`;
+  const seen = new Set(services.map(rowKey));
+  const hasMoreFlag = payload => {
+    const d = novaUnwrap(payload) || {}, top = payload || {};
+    const pg = d.pagination || top.pagination || d.meta || top.meta || {};
+    const cur = Number(pg.current_page ?? pg.page), last = Number(pg.last_page ?? pg.total_pages ?? pg.pages);
+    return !!(d.has_more || top.has_more || d.next_page || top.next_page || d.next_page_url || top.next_page_url ||
+      pg.has_more || pg.next_page || (top.links && top.links.next) || (d.links && d.links.next) ||
+      (Number.isFinite(cur) && Number.isFinite(last) && cur < last));
+  };
+  // Keep asking for the next page while the provider says there is one — or, if it gives no hint,
+  // while a full-looking page keeps bringing NEW rows (stops the moment a page adds nothing new).
+  let page = 1, last = first;
+  while (page < 60) {
+    const flagged = hasMoreFlag(last);
+    if (!flagged && !(page === 1 && services.length >= 20) && !(page > 1 && last.__added >= 20)) break;
     page++;
     let next;
     try { next = await novaRequestRetry('GET', '/catalog/numbers', { params: { ...params, page } }); } catch (e) { break; }
-    const more = novaServiceRows(next);
+    const more = novaServiceRows(next).filter(r => { const k = rowKey(r); if (seen.has(k)) return false; seen.add(k); return true; });
     if (!more.length) break;
     services = services.concat(more);
-    d = novaUnwrap(next);
-    if (!d.has_more && !next?.has_more && !d.next_page) break;
+    last = Object.assign({}, next, { __added: more.length });
   }
   return { servers: novaServerRows(first), countries: novaCountryRows(first), services };
 }
@@ -5965,7 +6046,7 @@ async function novaSyncAll() {
   try {
     const usa = await novaGetCatalog({ scope: 'usa' }, { refresh: true, fresh: true }); novaSync.done++;
     const glob = await novaGetCatalog({ scope: 'global' }, { refresh: true, fresh: true }); novaSync.done++;
-    const slugs = [...new Set(novaCountryRows(glob).filter(c => !/^(us|usa)$/i.test(String(c.iso || c.code || ''))).map(novaCountryParam).filter(Boolean))];
+    const slugs = [...new Set(novaCountryRows(glob).map(novaCountryParam).filter(Boolean))];
     novaSync.total = 2 + slugs.length;
     for (const slug of slugs) {
       novaSync.current = slug;
@@ -5991,9 +6072,7 @@ app.get('/api/numbers/live-services', optionalAuth, async (req, res) => {
    const country = String(req.query.country || '').trim();
    if (!country) return res.status(400).json({ error: 'country is required' });
    const serverId = Number(req.query.serverId || req.query.server_id || 0);
-   const resolved = await novaResolveCountry(country);
-   const params = { scope: resolved.scope }; if (resolved.country) params.country = resolved.country;
-   const cat = await novaGetCatalog(params, { refresh: String(req.query.refresh || '') === '1' });
+   const cat = await novaCatalogForCountry(country, { refresh: String(req.query.refresh || '') === '1' });
    const services = cat.services || [];
    const cfg = await getNumberServerConfig();
    const sidOf = s => Number(s.server_id ?? s.serverId ?? s.server?.id);
@@ -6001,19 +6080,32 @@ app.get('/api/numbers/live-services', optionalAuth, async (req, res) => {
    const hasServerInfo = services.some(s => Number.isInteger(sidOf(s)) && sidOf(s) > 0);
    const picked = (serverId && hasServerInfo) ? services.filter(s => sidOf(s) === serverId) : services;
    const minorOf = s => { const m = Number(s.price_minor); if (Number.isFinite(m)) return m; const x = Number(s.price ?? s.cost); return Number.isFinite(x) ? Math.round(x * 100) : NaN; };
-   res.set('Cache-Control', 'no-store');
-   res.json(picked.map(s => {
+   const out = picked.map(s => {
      const minor = minorOf(s);
+     const name = novaServiceDisplayName(s);
      return {
-       serviceId: String(s.id ?? s.service_id), provider: String(s.name || s.service || s.application || `Service ${s.id}`),
+       serviceId: String(s.id ?? s.service_id), provider: name,
        serverId: sidOf(s), serverName: String(s.server_name || s.server?.name || ''),
        price: novaServicePriceNgn({ ...s, price_minor: minor }, cfg), costNgn: Number.isFinite(minor) ? minor / 100 : 0, priceMinor: Number.isFinite(minor) ? minor : 0,
-       emoji: serviceEmoji(s.code || s.name, s.name), icon: serviceIconUrl(s.code || s.name, s.name), rawName: s.name || s.service || '',
+       emoji: serviceEmoji(s.code || s.slug || name, name), icon: serviceIconUrl(s.code || s.slug || name, name), rawName: s.name || s.service || '',
        syncedAt: cat.syncedAt, stale: !!cat.stale
      };
-   }).filter(x => x.price != null && x.price > 0));
+   }).filter(x => x.price != null && x.price > 0)
+     // Popular apps first (WhatsApp, Telegram, …), then A→Z, so nothing is hard to find.
+     .sort((a, b) => {
+       const pa = POPULAR_NAME_ORDER(a.provider), pb = POPULAR_NAME_ORDER(b.provider);
+       return (pa - pb) || a.provider.localeCompare(b.provider) || a.price - b.price;
+     });
+   res.set('Cache-Control', 'no-store');
+   res.json(out);
  } catch (e) { novaErrorResponse(res, e); }
 });
+function POPULAR_NAME_ORDER(name) {
+  const order = ['whatsapp', 'telegram', 'tiktok', 'facebook', 'instagram', 'google', 'twitter', 'snapchat', 'discord', 'linkedin', 'viber', 'microsoft', 'amazon', 'netflix', 'paypal', 'uber'];
+  const n = String(name || '').toLowerCase();
+  const i = order.findIndex(k => n.includes(k));
+  return i === -1 ? 999 : i;
+}
 function novaHttpError(status, message, extra) {
   const e = new Error(message); e.status = status; Object.assign(e, extra || {}); return e;
 }
@@ -6045,9 +6137,8 @@ async function novaPurchaseNumber({ userId, serviceId, serverId, countryCode, ex
   if (!Number.isInteger(serviceId) || serviceId <= 0 || !countryCode || !Number.isInteger(serverId) || serverId <= 0) {
     throw novaHttpError(400, 'Select a server, country and service before purchasing.');
   }
-  const resolvedCountry = await novaResolveCountry(countryCode);
-  const catalogParams = { scope: resolvedCountry.scope }; if (resolvedCountry.country) catalogParams.country = resolvedCountry.country;
-  const services = await novaCatalogServices(catalogParams, { fresh: true });
+  const catalogPayload = await novaCatalogForCountry(countryCode, { fresh: true });
+  const services = catalogPayload.services || [];
   const sidOf = x => Number(x.server_id ?? x.serverId ?? x.server?.id);
   const hasServerInfo = services.some(x => Number.isInteger(sidOf(x)) && sidOf(x) > 0);
   let service = services.find(x => Number(x.id ?? x.service_id) === serviceId && (!hasServerInfo || sidOf(x) === serverId));
@@ -6075,7 +6166,7 @@ async function novaPurchaseNumber({ userId, serviceId, serverId, countryCode, ex
       let held = null;
       try {
         held = await NumberListing.create({
-          provider: String(service.name || service.service || service.application || 'Number'),
+          provider: novaServiceDisplayName(service),
           country: String(countryCode), phoneNumber: 'pending-review',
           cost: Number(service.price_minor || 0) / 100, sellPrice, status: 'needs_review', soldTo: userId, soldAt: new Date(),
           server: 'server1', novaServiceId: serviceId, novaServerId: serverId, novaIdempotencyKey: idempotencyKey,
@@ -6119,7 +6210,7 @@ async function novaPurchaseNumber({ userId, serviceId, serverId, countryCode, ex
     serverName = String(serverRow.name || serverName);
     const countryRow = countries.find(x => String(x.code || x.country_code || x.iso2 || '').toLowerCase() === String(countryCode).toLowerCase()) || {};
     listing = await NumberListing.create({
-      provider: String(service.name || service.service || service.application || 'Number'),
+      provider: novaServiceDisplayName(service),
       country: String(session.country || countryRow.name || countryRow.country_name || countryCode),
       phoneNumber, cost: actualCostNgn !== null ? actualCostNgn : Number(service.price_minor || 0) / 100, sellPrice, status: 'sold', soldTo: userId, soldAt: new Date(),
       expiresAt: session.expires_at ? new Date(session.expires_at) : new Date(Date.now() + NUMBER_RENTAL_WINDOW_MS),
