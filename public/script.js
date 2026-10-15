@@ -1491,7 +1491,7 @@ async function generateApiKey() {
   } catch(e) { setFb(fb,e.message,'err'); }
 }
 async function revokeApiKey() {
-  if (!confirm('Revoke your API key? Any scripts using it will stop working immediately.')) return;
+  if (!await kslConfirm('Revoke your API key? Any scripts using it will stop working immediately.')) return;
   try { await req('/api/user/api-key/revoke','POST',{},true); loadApiKeySection(); showToast('API key revoked'); }
   catch(e) { showToast(e.message,'err'); }
 }
@@ -1941,7 +1941,7 @@ async function buySubAccount(logId, subId, price) {
     document.getElementById('itemModal').classList.remove('open');
     showPage('deposit'); return;
   }
-  if (!confirm(`Are you ready to make this purchase? ${P(price)} will be deducted from your wallet.`)) return;
+  if (!await kslConfirm(`Are you ready to make this purchase? ${P(price)} will be deducted from your wallet.`)) return;
   const btn=document.getElementById('subBuyBtnBottom');
   if (btn) { btn.disabled=true; btn.textContent='Processing...'; }
   try {
@@ -2093,7 +2093,7 @@ async function buySelectedSubAccounts() {
     document.getElementById('itemModal').classList.remove('open');
     showPage('deposit'); return;
   }
-  if (!confirm(`Buy ${items.length} account${items.length>1?'s':''} for ${P(total)} total? This will be deducted from your wallet.`)) return;
+  if (!await kslConfirm(`Buy ${items.length} account${items.length>1?'s':''} for ${P(total)} total? This will be deducted from your wallet.`)) return;
   const btn = document.getElementById('subBuyBtnBottom');
   if (btn) { btn.disabled = true; btn.textContent = 'Processing...'; }
   try {
@@ -2127,7 +2127,7 @@ async function buyItem(id) {
     document.getElementById('itemModal').classList.remove('open');
     showPage('deposit'); return;
   }
-  if (!confirm(`Are you ready to make this purchase? ${P(item.price)} will be deducted from your wallet.`)) return;
+  if (!await kslConfirm(`Are you ready to make this purchase? ${P(item.price)} will be deducted from your wallet.`)) return;
   const btn=document.getElementById('mbuyBtn');
   if (btn) { btn.disabled=true; btn.textContent='Processing...'; }
   try {
@@ -4085,7 +4085,7 @@ async function loadSecurityPanel() {
   }
 }
 async function revokeSession(id) {
-  if (!confirm('Sign this device out of your account?')) return;
+  if (!await kslConfirm('Sign this device out of your account?')) return;
   try {
     const r = await req(`/api/user/security/sessions/${id}/revoke`, 'POST', null, true);
     showToast(r.message || 'Device signed out');
@@ -4093,7 +4093,7 @@ async function revokeSession(id) {
   loadSecurityPanel();
 }
 async function revokeOtherSessions() {
-  if (!confirm('Sign out every other device on your account?')) return;
+  if (!await kslConfirm('Sign out every other device on your account?')) return;
   try {
     const r = await req('/api/user/security/sessions/revoke-others', 'POST', null, true);
     showToast(r.message || 'Other devices signed out');

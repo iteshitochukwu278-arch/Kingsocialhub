@@ -247,6 +247,7 @@ function AMT(n)   { return window.KLSMoney ? window.KLSMoney.amount(n) : '₦' +
   <!-- Brand colours/fonts from site.config.js — keep last so it can override -->
   <link rel="stylesheet" href="/brand.css"/>
   <link rel="stylesheet" href="/css/mobile-fix.css">
+<script src="/js/kls-ui.js?v=1"></script>
 </head>
 <body>
 <!-- Shared UI icon sprite (replaces emoji site-wide) — referenced via <svg class="icon i-NAME"><use href="#i-NAME"/></svg> -->
@@ -1045,7 +1046,7 @@ async function buyNumber() {
   const match = numServices.find(s => s.serviceId === serviceId);
   if (!serviceId || !country || !match) return setFb(fb, 'Please select a country and provider', 'err');
   if (!bnToken) { window.location.href = '/login'; return; }
-  if (!confirm(`Buy this number for ${PRICE(match.price)}? This will be deducted from your wallet now, and automatically refunded if no code arrives within 20 minutes.`)) return;
+  if (!await kslConfirm(`Buy this number for ${PRICE(match.price)}? This will be deducted from your wallet now, and automatically refunded if no code arrives within 20 minutes.`)) return;
 
   btn.disabled = true; btn.textContent = 'Processing…'; setFb(fb, '', '');
   try {
@@ -1143,7 +1144,7 @@ async function cancelNumberOrder() {
   if (!numCurrentOrder) return;
   const statusNote = document.getElementById('numStatusNote');
   const cancelBtn = document.getElementById('numCancelBtn');
-  if (!confirm('Cancel this number and get refunded now? You will not be able to receive a code on it afterward.')) return;
+  if (!await kslConfirm('Cancel this number and get refunded now? You will not be able to receive a code on it afterward.')) return;
   cancelBtn.disabled = true; cancelBtn.textContent = 'Cancelling…';
   try {
     const r = await req(`/api/numbers/cancel/${numCurrentOrder.orderId}`, 'POST', null, true);
@@ -1425,14 +1426,29 @@ async function loadG2Services() {
   const sel = document.getElementById('g2ServiceSelect');
   const empty = document.getElementById('numEmptyState2');
   const form = document.getElementById('numPickerForm2');
+  // Instant start: paint the list saved on this device first, then refresh it behind the scenes.
+  let fromCache = false;
+  if (!g2Services.length) {
+    try {
+      const c = JSON.parse(localStorage.getItem('kls_g2_services') || 'null');
+      if (Array.isArray(c) && c.length) {
+        g2Services = c; fromCache = true;
+        empty.style.display = 'none'; form.style.display = 'block';
+        renderG2Services(g2Services); renderG2PopularChips();
+      }
+    } catch (e) {}
+  }
   try {
-    g2Services = await req('/api/numbers/server2/services', 'GET', null, false);
-    if (!g2Services.length) { empty.style.display = 'block'; form.style.display = 'none'; return; }
+    const fresh = await req('/api/numbers/server2/services', 'GET', null, false);
+    if (!fresh.length) { if (!fromCache) { empty.style.display = 'block'; form.style.display = 'none'; } return; }
+    try { localStorage.setItem('kls_g2_services', JSON.stringify(fresh)); } catch (e) {}
+    const changed = JSON.stringify(fresh) !== JSON.stringify(g2Services);
+    g2Services = fresh;
     empty.style.display = 'none'; form.style.display = 'block';
-    renderG2Services(g2Services);
-    renderG2PopularChips();
+    // Never disturb a service the customer has already picked.
+    if (changed && !document.getElementById('g2ServiceSelect').value) { renderG2Services(g2Services); renderG2PopularChips(); }
   } catch (e) {
-    empty.style.display = 'block'; form.style.display = 'none';
+    if (!fromCache) { empty.style.display = 'block'; form.style.display = 'none'; }
   }
 }
 
@@ -1913,8 +1929,8 @@ async function buyNumberServer2() {
     g2LastChecked = new Date();
     setG2Stock(`Verified live · ${p.count} left · ${g2LastChecked.toLocaleTimeString()}`);
     if (p.price !== wasPrice) {
-      if (!confirm(`Heads up — this provider's price just changed from ${PRICE(wasPrice)} to ${PRICE(p.price)}. Continue at ${PRICE(p.price)}?`)) return;
-    } else if (!confirm(`Buy this number for ${PRICE(p.price)}? ${p.count} in stock right now. It is deducted from your wallet now and automatically refunded if no code arrives in time.`)) {
+      if (!await kslConfirm(`Heads up — this provider's price just changed from ${PRICE(wasPrice)} to ${PRICE(p.price)}. Continue at ${PRICE(p.price)}?`)) return;
+    } else if (!await kslConfirm(`Buy this number for ${PRICE(p.price)}? ${p.count} in stock right now. It is deducted from your wallet now and automatically refunded if no code arrives in time.`)) {
       return;
     }
   } catch (e) {
@@ -1953,6 +1969,7 @@ function dismissAnnouncement() {
 
 (async function initBuyNumberPage() {
   loadBalance();
+  loadG2Services(); // Server 2 services start loading immediately, in parallel
   await loadNumOptions(); // countries must be loaded first — renderActiveNumbers looks up flags from numCountries
   await loadNumServers(); // decides which server tab the customer starts on
 
