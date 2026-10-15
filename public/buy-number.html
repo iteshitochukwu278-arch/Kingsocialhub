@@ -1121,7 +1121,7 @@ async function buyNumber() {
   if (!bnToken) { window.location.href = '/login'; return; }
   if (!await kslConfirm(`Buy this number for ${PRICE(match.price)}? This will be deducted from your wallet now, and automatically refunded if no code arrives within 20 minutes.`)) return;
 
-  btn.disabled = true; btn.textContent = 'Processing…'; setFb(fb, '', '');
+  btn.disabled = true; btn.textContent = 'Placing your order…'; setFb(fb, 'Placing your order — this can take up to a minute. Please don’t close the page.', 'ok');
   try {
     const order = await req('/api/numbers/buy', 'POST', { country, serviceId, provider: match.provider, serverId: Number(selectedNovaServerId), expectedPrice: match.price }, true, 90000);
     order.amountPaid = order.amountPaid || match.price || 0;
@@ -1139,6 +1139,7 @@ async function buyNumber() {
     } else {
  setFb(fb, ' ' + e.message, 'err');
     }
+    try { fb.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {}
   } finally {
  btn.disabled = false; btn.textContent = ' Buy This Number';
   }
