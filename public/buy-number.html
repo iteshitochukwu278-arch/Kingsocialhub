@@ -945,8 +945,8 @@ async function onNumCountryChange(refresh) {
     if (document.getElementById('numCountrySelect').value !== country) return; // customer changed country mid-load
     if (!Array.isArray(numServices) || !numServices.length) {
       numServices = [];
-      providerSelect.innerHTML = '<option value="">No services in stock for this country right now</option>';
-      providerValueText.innerHTML = 'No services right now — <a href="#" onclick="onNumCountryChange(true);return false">tap to retry</a>';
+      providerSelect.innerHTML = '<option value="">No services on this server for this country</option>';
+      providerValueText.innerHTML = 'Nothing in stock on this server for this country — try another server, or <a href="#" onclick="onNumCountryChange(true);return false">tap to refresh</a>';
       return;
     }
     providerSelect.innerHTML = '<option value="">Select a provider…</option>' +
