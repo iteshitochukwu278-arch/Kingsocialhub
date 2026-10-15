@@ -92,6 +92,133 @@
     };
     var p = queue.then(run); queue = p.catch(function () {}); return p;
   }
+
+  /* ───────── Tap-to-choose pickers ─────────
+   * The big "select tiles" (server / country / service / pool) used to open the phone's own
+   * picker, which needs a "Done" tap. Now a tile opens our own sheet instead: tap an item and it
+   * is chosen and the sheet closes straight away. The real <select> stays underneath, so every
+   * page's existing logic keeps working (we just set its value and fire "change").
+   */
+  var pcss = '' +
+    '.select-tile select{pointer-events:none!important}.select-tile{-webkit-tap-highlight-color:transparent}' +
+    '#klsPick{position:fixed;inset:0;z-index:2147483050;display:none;align-items:flex-end;justify-content:center;background:rgba(5,7,12,.6);backdrop-filter:blur(3px)}' +
+    '#klsPick.show{display:flex;animation:klsFade .18s}' +
+    '.kp-sheet{width:min(560px,100%);max-height:86vh;display:flex;flex-direction:column;background:#12141c;color:#f4f4f8;border:1px solid rgba(255,255,255,.09);border-radius:22px 22px 0 0;box-shadow:0 -18px 60px rgba(0,0,0,.5);animation:kpUp .28s cubic-bezier(.2,.9,.3,1.05)}' +
+    '@keyframes kpUp{from{transform:translateY(40px);opacity:.4}to{transform:none;opacity:1}}' +
+    '@media (min-width:700px){#klsPick{align-items:center}.kp-sheet{border-radius:22px;max-height:78vh}}' +
+    '.kp-hd{display:flex;align-items:center;gap:10px;padding:16px 16px 8px}.kp-hd h3{margin:0;font-size:17px;flex:1}.kp-x{background:rgba(255,255,255,.08);border:0;color:inherit;width:34px;height:34px;border-radius:50%;font-size:20px;line-height:1;cursor:pointer}' +
+    '.kp-search{margin:4px 16px 10px;padding:12px 14px;border-radius:12px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.05);color:inherit;font-size:16px;outline:none}.kp-search:focus{border-color:#16a34a}' +
+    '.kp-list{overflow-y:auto;-webkit-overflow-scrolling:touch;padding:0 8px 14px;flex:1;min-height:120px}' +
+    '.kp-grp{position:sticky;top:0;z-index:1;padding:8px 10px 4px;font-size:12px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;opacity:.65;background:#12141c}' +
+    '.kp-item{display:flex;align-items:center;gap:12px;width:100%;box-sizing:border-box;text-align:left;padding:12px 10px;border:0;background:transparent;color:inherit;border-radius:12px;cursor:pointer;font-size:15px;font-family:inherit}' +
+    '.kp-item:hover,.kp-item:focus{background:rgba(255,255,255,.07);outline:none}.kp-item:active{background:rgba(22,163,74,.2)}.kp-item.sel{background:rgba(22,163,74,.16)}' +
+    '.kp-ic{width:28px;height:28px;flex:0 0 auto;display:grid;place-items:center;font-size:20px}.kp-ic img{width:26px;height:26px;object-fit:contain;border-radius:6px}.kp-ic img.fl{width:28px;height:20px;object-fit:cover;border-radius:3px;box-shadow:0 0 0 1px rgba(0,0,0,.15)}' +
+    '.kp-tx{flex:1;min-width:0}.kp-nm{font-weight:700;overflow:hidden;text-overflow:ellipsis}.kp-mt{font-size:12.5px;opacity:.7;margin-top:2px}.kp-ck{color:#22c55e;font-weight:900}' +
+    '.kp-empty{padding:26px 14px;text-align:center;opacity:.7}' +
+    '[data-theme="light"] .kp-sheet{background:#fff;color:#111827;border-color:rgba(0,0,0,.1)}[data-theme="light"] .kp-grp{background:#fff}[data-theme="light"] .kp-search{background:#f3f4f6;border-color:#d1d5db}[data-theme="light"] .kp-item:hover{background:#f3f4f6}[data-theme="light"] .kp-x{background:#eceff3}' +
+    '@media (prefers-color-scheme:light){html:not([data-theme="dark"]) .kp-sheet{background:#fff;color:#111827;border-color:rgba(0,0,0,.1)}html:not([data-theme="dark"]) .kp-grp{background:#fff}html:not([data-theme="dark"]) .kp-search{background:#f3f4f6;border-color:#d1d5db}html:not([data-theme="dark"]) .kp-x{background:#eceff3}}';
+  var pickEl, pickState = null;
+  function flagUrl(emoji) {
+    var cp = Array.from(emoji).map(function (c) { return c.codePointAt(0); }).filter(function (c) { return c >= 127462 && c <= 127487; });
+    return cp.length === 2 ? 'https://flagcdn.com/w40/' + String.fromCharCode(cp[0] - 127397, cp[1] - 127397).toLowerCase() + '.png' : '';
+  }
+  function readOptions(sel) {
+    var out = [], group = '';
+    Array.prototype.forEach.call(sel.children, function (n) {
+      if (n.tagName === 'OPTGROUP') {
+        group = n.label || '';
+        Array.prototype.forEach.call(n.children, function (o) { push(o, group); });
+      } else if (n.tagName === 'OPTION') push(n, '');
+    });
+    function push(o, g) {
+      if (o.value === '' || o.disabled) return;
+      var text = (o.textContent || '').trim(), icon = o.getAttribute('data-icon') || '', name = o.getAttribute('data-name'), meta = o.getAttribute('data-meta');
+      var lead = '';
+      var fm = text.match(/^([\u{1F1E6}-\u{1F1FF}]{2})\s*/u);
+      if (fm) { lead = 'flag:' + flagUrl(fm[1]); text = text.slice(fm[0].length); }
+      if (name == null) {
+        var parts = text.split(' — ');
+        name = parts.shift(); meta = meta != null ? meta : parts.join(' — ');
+        if (!fm && !icon) { var em = name.match(/^([^\w\s]{1,3}(?:\uFE0F)?)\s+(.*)$/u); if (em) { lead = 'emoji:' + em[1]; name = em[2]; } }
+      }
+      out.push({ value: o.value, name: name, meta: meta || '', icon: icon, lead: lead, group: g, selected: o.selected && sel.value === o.value });
+    }
+    return out;
+  }
+  function iconHtml(it) {
+    if (it.icon) return '<img src="' + esc(it.icon) + '" alt="" loading="lazy" onerror="this.replaceWith(document.createTextNode(\'📱\'))">';
+    if (it.lead.indexOf('flag:') === 0 && it.lead.length > 5) return '<img class="fl" src="' + esc(it.lead.slice(5)) + '" alt="" loading="lazy" onerror="this.replaceWith(document.createTextNode(\'🌍\'))">';
+    if (it.lead.indexOf('emoji:') === 0) return esc(it.lead.slice(6));
+    return '';
+  }
+  function closePick() { if (!pickEl) return; pickEl.classList.remove('show'); pickEl.innerHTML = ''; pickState = null; document.removeEventListener('keydown', pickKey); }
+  function pickKey(e) { if (e.key === 'Escape') closePick(); }
+  function openPick(sel, tile) {
+    ready(function () {
+      mount();
+      if (!pickEl) {
+        var st = document.createElement('style'); st.textContent = pcss; document.head.appendChild(st);
+        pickEl = document.createElement('div'); pickEl.id = 'klsPick'; document.body.appendChild(pickEl);
+      }
+      var items = readOptions(sel);
+      var title = ((tile.querySelector('.st-label') || {}).textContent || 'Choose').trim();
+      var touch = window.matchMedia && window.matchMedia('(pointer:coarse)').matches;
+      pickEl.innerHTML = '<div class="kp-sheet" role="dialog" aria-modal="true"><div class="kp-hd"><h3>' + esc(title) + '</h3><button class="kp-x" type="button" aria-label="Close">×</button></div>' +
+        (items.length > 7 ? '<input class="kp-search" type="search" placeholder="Search…" autocomplete="off">' : '') + '<div class="kp-list"></div></div>';
+      pickEl.classList.add('show');
+      var list = pickEl.querySelector('.kp-list'), search = pickEl.querySelector('.kp-search');
+      var view = [], shown = 0, STEP = 80;
+      pickState = { sel: sel };
+      function row(it, i) {
+        return '<button type="button" class="kp-item' + (it.selected ? ' sel' : '') + '" data-i="' + i + '"><span class="kp-ic">' + iconHtml(it) + '</span><span class="kp-tx"><div class="kp-nm">' + esc(it.name) + '</div>' + (it.meta ? '<div class="kp-mt">' + esc(it.meta) + '</div>' : '') + '</span>' + (it.selected ? '<span class="kp-ck">✓</span>' : '') + '</button>';
+      }
+      function paint(reset) {
+        if (reset) { list.innerHTML = ''; shown = 0; }
+        if (!view.length) { list.innerHTML = '<div class="kp-empty">Nothing matches your search.</div>'; return; }
+        var html = '', last = shown ? view[shown - 1].it.group : null;
+        view.slice(shown, shown + STEP).forEach(function (v) {
+          if (v.it.group && v.it.group !== last) { html += '<div class="kp-grp">' + esc(v.it.group) + '</div>'; }
+          last = v.it.group; html += row(v.it, v.i);
+        });
+        shown += STEP;
+        list.insertAdjacentHTML('beforeend', html);
+      }
+      function filter() {
+        var q = search ? search.value.trim().toLowerCase() : '';
+        view = items.map(function (it, i) { return { it: it, i: i }; }).filter(function (v) { return !q || (v.it.name + ' ' + v.it.meta).toLowerCase().indexOf(q) !== -1; });
+        paint(true);
+        if (!q) { var s = list.querySelector('.sel'); if (s) s.scrollIntoView({ block: 'center' }); }
+      }
+      list.addEventListener('scroll', function () { if (shown < view.length && list.scrollTop + list.clientHeight > list.scrollHeight - 300) paint(false); });
+      list.addEventListener('click', function (e) {
+        var b = e.target.closest('.kp-item'); if (!b) return;
+        var it = items[Number(b.getAttribute('data-i'))]; if (!it) return;
+        closePick();
+        sel.value = it.value;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      if (search) { search.addEventListener('input', filter); if (!touch) setTimeout(function () { search.focus(); }, 40); }
+      pickEl.querySelector('.kp-x').onclick = closePick;
+      pickEl.onclick = function (e) { if (e.target === pickEl) closePick(); };
+      document.addEventListener('keydown', pickKey);
+      filter();
+    });
+  }
+  function installPickers() {
+    ready(function () {
+      var st = document.createElement('style'); st.textContent = '.select-tile select{pointer-events:none!important}'; document.head.appendChild(st);
+    });
+    document.addEventListener('click', function (e) {
+      var tile = e.target.closest && e.target.closest('.select-tile');
+      if (!tile) return;
+      var sel = tile.querySelector('select'); if (!sel) return;
+      e.preventDefault();
+      if (sel.disabled) { var hint = ((tile.querySelector('.st-value') || {}).textContent || '').trim(); if (hint) banner(hint, 'info', { title: 'One step at a time', ms: 2600 }); return; }
+      openPick(sel, tile);
+    }, true);
+  }
+  installPickers();
+
   window.KLS = { banner: banner, confirm: confirmCard };
   window.kslConfirm = confirmCard;
   window.alert = function (m) { banner(m); };

@@ -951,7 +951,7 @@ async function onNumCountryChange(refresh) {
       return;
     }
     providerSelect.innerHTML = '<option value="">Select a provider…</option>' +
-      numServices.map(s => `<option value="${esc(s.serviceId)}">${esc(s.emoji || '')} ${esc(s.provider)} — ${PRICE(s.price)}</option>`).join('');
+      numServices.map(s => `<option value="${esc(s.serviceId)}" data-name="${esc(s.provider)}" data-icon="${esc(s.icon || '')}" data-meta="${esc(PRICE(s.price))}">${esc(s.emoji || '')} ${esc(s.provider)} — ${PRICE(s.price)}</option>`).join('');
     providerSelect.disabled = false;
     const ss = document.getElementById('s1ServiceSearch'); ss.disabled = false; ss.value = '';
     providerValueText.textContent = 'Select a provider…';
@@ -1447,11 +1447,22 @@ async function loadG2Services() {
     empty.style.display = 'none'; form.style.display = 'block';
     // Never disturb a service the customer has already picked.
     if (changed && !document.getElementById('g2ServiceSelect').value) { renderG2Services(g2Services); renderG2PopularChips(); }
+    prefetchG2Popular();
   } catch (e) {
     if (!fromCache) { empty.style.display = 'block'; form.style.display = 'none'; }
   }
 }
 
+// Quietly pre-load the country lists of the most popular services so the first tap is instant.
+let g2Prefetched = false;
+function prefetchG2Popular() {
+  if (g2Prefetched) return; g2Prefetched = true;
+  const codes = g2Services.filter(s => s.popular).slice(0, 8).map(s => s.code);
+  codes.forEach((c, i) => setTimeout(() => {
+    if (g2CountriesCache.has(c)) return;
+    req(`/api/numbers/server2/countries?service=${encodeURIComponent(c)}`, 'GET', null, false).then(r => g2CountriesCache.set(c, r)).catch(() => {});
+  }, 600 * (i + 1)));
+}
 function g2ServiceLabel(s) { return `${s.emoji || '📱'} ${s.name}`; }
 
 // Real app logo (simple-icons CDN, served by our API as `icon`). Falls back to the
@@ -1474,7 +1485,7 @@ function renderG2Services(list) {
     document.getElementById('g2ServiceValueText').textContent = 'No match';
     return;
   }
-  const opt = s => `<option value="${esc(s.code)}">${esc(g2ServiceLabel(s))}</option>`;
+  const opt = s => `<option value="${esc(s.code)}" data-name="${esc(s.name)}" data-icon="${esc(s.icon || '')}">${esc(g2ServiceLabel(s))}</option>`;
   const popular = list.filter(s => s.popular);
   const rest = list.filter(s => !s.popular).slice().sort((a, b) => a.name.localeCompare(b.name));
   // Everything that is not "most popular" is grouped A, B, C … Z so a service is easy to find.
@@ -1762,6 +1773,9 @@ function resetG2Providers(msg) {
   document.getElementById('g2BuyBtn').disabled = true;
 }
 
+// Stored copies, like Server 1: once a service/country has been opened, it opens instantly next
+// time and the fresh numbers slot in behind it.
+const g2CountriesCache = new Map(), g2ProvidersCache = new Map();
 async function onG2ServiceChange() {
   const service = document.getElementById('g2ServiceSelect').value;
   const countrySel = document.getElementById('g2CountrySelect');
@@ -1776,20 +1790,36 @@ async function onG2ServiceChange() {
     countrySel.disabled = true; countryText.textContent = 'Select a service first';
     return;
   }
-  countrySel.innerHTML = '<option value="">Loading…</option>'; countrySel.disabled = true;
-  countryText.textContent = 'Loading…';
   const countrySearch = document.getElementById('g2CountrySearch');
-  countrySearch.value = ''; countrySearch.disabled = true;
-  try {
-    g2Countries = await req(`/api/numbers/server2/countries?service=${encodeURIComponent(service)}`, 'GET', null, false);
-    if (!g2Countries.length) {
-      countrySel.innerHTML = '<option value="">No stock for this service right now</option>';
-      countryText.textContent = 'No stock right now';
-      return;
-    }
+  countrySearch.value = '';
+  const stillCurrent = () => document.getElementById('g2ServiceSelect').value === service;
+  const cached = g2CountriesCache.get(service);
+  if (cached && cached.length) {
+    g2Countries = cached;
     renderG2Countries(sortedG2Countries());
     countrySearch.disabled = false;
+  } else {
+    countrySel.innerHTML = '<option value="">Loading…</option>'; countrySel.disabled = true;
+    countryText.textContent = 'Loading…'; countrySearch.disabled = true;
+  }
+  try {
+    const fresh = await req(`/api/numbers/server2/countries?service=${encodeURIComponent(service)}`, 'GET', null, false);
+    g2CountriesCache.set(service, fresh);
+    if (!stillCurrent()) return;
+    if (!fresh.length) {
+      g2Countries = [];
+      countrySel.innerHTML = '<option value="">No stock for this service right now</option>';
+      countrySel.disabled = true; countryText.textContent = 'No stock right now';
+      return;
+    }
+    // Don't redraw under the customer's finger if they already picked a country from the stored list.
+    if (!(cached && cached.length && countrySel.value)) {
+      g2Countries = fresh;
+      renderG2Countries(sortedG2Countries());
+    } else { g2Countries = fresh; }
+    countrySearch.disabled = false;
   } catch (e) {
+    if (cached && cached.length) return;
     countrySel.innerHTML = '<option value="">Failed to load — try again</option>';
     countryText.textContent = 'Failed to load — try again';
   }
@@ -1870,22 +1900,33 @@ async function onG2CountryChange() {
   document.getElementById('g2CountryValueText').textContent =
     cMeta ? `${cMeta.flag || '🌍'} ${cMeta.name}` : 'Select a country…';
 
-  resetG2Providers('Loading…');
   if (!country) { resetG2Providers('Select a country first'); setG2Stock('Availability updates automatically'); loadG2Operators(''); return; }
   loadG2Operators(country);
-  setG2Stock('Checking live availability…');
+  const key = service + '|' + country;
+  const stillCurrent = () => document.getElementById('g2ServiceSelect').value === service && document.getElementById('g2CountrySelect').value === country;
+  const cached = g2ProvidersCache.get(key);
+  if (cached && cached.length) {
+    g2Providers = cached; renderG2Providers(false);
+    setG2Stock('Updating live availability…'); startG2AvailabilityWatch();
+  } else { resetG2Providers('Loading…'); setG2Stock('Checking live availability…'); }
   try {
-    g2Providers = await fetchG2Providers(service, country);
-    if (!g2Providers.length) {
+    const fresh = await fetchG2Providers(service, country);
+    g2ProvidersCache.set(key, fresh);
+    if (!stillCurrent()) return;
+    g2Providers = fresh;
+    if (!fresh.length) {
       resetG2Providers('No providers in stock — pick another country');
       setG2Stock('Out of stock right now');
       return;
     }
-    renderG2Providers(false);
+    renderG2Providers(!!(cached && cached.length));
     g2LastChecked = new Date();
     setG2Stock(`${g2Providers.length} provider${g2Providers.length > 1 ? 's' : ''} in stock · checked ${g2LastChecked.toLocaleTimeString()}`);
     startG2AvailabilityWatch();
-  } catch (e) { resetG2Providers('Failed to load — try again'); setG2Stock('Could not check availability — tap to retry'); }
+  } catch (e) {
+    if (cached && cached.length) { setG2Stock('Showing saved stock — tap refresh to re-check'); return; }
+    resetG2Providers('Failed to load — try again'); setG2Stock('Could not check availability — tap to retry');
+  }
 }
 
 function onG2ProviderChange() {
