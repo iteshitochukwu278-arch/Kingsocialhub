@@ -1096,8 +1096,10 @@ tr:hover td{background:rgba(255,255,255,.035)}
           <div id="novaBalanceBox" style="font-size:15px;font-weight:700">NovaSolution balance not loaded yet</div>
           <button class="btn-secondary" type="button" onclick="loadNovaBalance()">Refresh NovaSolution balance</button>
           <button class="btn-secondary" type="button" onclick="loadNovaCatalogSummary()">Check live catalog</button>
+          <button class="btn-secondary" type="button" id="novaSyncBtn" onclick="startNovaSync()">⟳ Sync all services to the website</button>
         </div>
         <div id="novaCatalogSummary" style="font-size:12.5px;color:var(--t2);margin-top:8px">—</div>
+        <div id="novaSyncStatus" style="font-size:12.5px;color:var(--t2);margin-top:6px">Customers see the saved list. Tap Sync to pull every server, country and service from the provider and save it. Old data is kept if the provider fails.</div>
         <div id="novaAdminFeedback" class="form-feedback"></div>
       </div>
       <div class="sec">
@@ -1338,7 +1340,7 @@ tr:hover td{background:rgba(255,255,255,.035)}
       </div>
     </div>
 
-      <div class="card"><h3>Boost 2 — Nova Solution pricing</h3><p class="muted">This catalogue uses only NovaSolution GET /catalog/smm and POST /orders with type=smm. Configure a markup or a specific selling price per service. API credentials are read server-side from NOVA_API_KEY.</p><div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0"><input id="novaBoostSearch" placeholder="Search Nova Solution services…" oninput="novaBoostRender()"/><button class="btn-sm" onclick="novaBoostLoad()">Refresh catalogue</button></div><div class="table-wrap"><table class="tbl"><thead><tr><th>Service</th><th>Provider cost / 1000</th><th>Price mode</th><th>Specific price</th><th>Markup</th><th>Enabled</th><th></th></tr></thead><tbody id="novaBoostRows"><tr><td colspan="7">Load catalogue to begin.</td></tr></tbody></table></div></div>
+      <div class="card"><h3>Boost 2 — Nova Solution pricing</h3><p class="muted">This catalogue uses only NovaSolution GET /catalog/smm and POST /orders with type=smm. Configure a markup or a specific selling price per service. API credentials are read server-side from NOVA_API_KEY.</p><div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0"><input id="novaBoostSearch" placeholder="Search Nova Solution services…" oninput="novaBoostRender()"/><button class="btn-sm" onclick="novaBoostSync()">⟳ Sync services from provider</button><span id="novaBoostSyncMsg" class="muted"></span></div><div class="table-wrap"><table class="tbl"><thead><tr><th>Service</th><th>Provider cost / 1000</th><th>Price mode</th><th>Specific price</th><th>Markup</th><th>Enabled</th><th></th></tr></thead><tbody id="novaBoostRows"><tr><td colspan="7">Load catalogue to begin.</td></tr></tbody></table></div></div>
     </div>
     <div id="tab-badges" class="tab-panel">
       <div class="sec">
@@ -2082,7 +2084,7 @@ function switchTab(name,el) {
 
   if(name==='receipts')     loadReceipts();
   if(name==='deptutorials') loadDepositTutorialsAdmin();
-  if(name==='numbers')      { loadNumberStock(); loadNovaBalance(); loadNovaCatalogSummary(); loadUserNumberPrices(); loadNumberServerConfig(); loadGrizzlyBalance(); loadNumberProfit(); loadAdminHealth(); loadAdminNumberOrders(); }
+  if(name==='numbers')      { try{pollNovaSync();}catch(e){} loadNumberStock(); loadNovaBalance(); loadNovaCatalogSummary(); loadUserNumberPrices(); loadNumberServerConfig(); loadGrizzlyBalance(); loadNumberProfit(); loadAdminHealth(); loadAdminNumberOrders(); }
   if(name==='numbers2')     { initNumbers2(); loadN2AlertSettings(); loadProviderAnalytics(); }
   if(name==='finance')      { finLoadSettings(); finSearch(); finLoadWebhooks(); }
   if(name==='virtualaccounts') { loadVASettings(); loadVAList(); loadVADeposits(); }
@@ -6060,6 +6062,33 @@ async function m2LoadOrders(){
   } catch(e){ el.textContent=e.message; }
 }
 
+
+// ── Saved-catalogue sync (numbers + Boost 2) ─────────────────────────────────
+let _novaSyncTimer = null;
+async function pollNovaSync() {
+  const box = document.getElementById('novaSyncStatus'), btn = document.getElementById('novaSyncBtn');
+  try {
+    const s = await aFetch('/api/admin/numbers/sync-status');
+    if (s.running) {
+      if (box) box.textContent = `Syncing… ${s.done}/${s.total}${s.current ? ' (' + s.current + ')' : ''}`;
+      if (btn) btn.disabled = true;
+      _novaSyncTimer = setTimeout(pollNovaSync, 2000);
+    } else {
+      if (btn) btn.disabled = false;
+      if (box) box.textContent = (s.message || 'Idle.') + (s.lastSyncedAt ? ' Last saved: ' + new Date(s.lastSyncedAt).toLocaleString() + '.' : '');
+    }
+  } catch (e) { if (box) box.textContent = 'Could not read sync status: ' + e.message; if (btn) btn.disabled = false; }
+}
+async function startNovaSync() {
+  const box = document.getElementById('novaSyncStatus');
+  try { if (box) box.textContent = 'Starting sync…'; await aFetch('/api/admin/numbers/sync', 'POST', {}); clearTimeout(_novaSyncTimer); pollNovaSync(); }
+  catch (e) { if (box) box.textContent = 'Sync could not start: ' + e.message; }
+}
+async function novaBoostSync() {
+  const m = document.getElementById('novaBoostSyncMsg'); if (m) m.textContent = ' Syncing…';
+  try { const r = await aFetch('/api/admin/boost2/sync', 'POST', {}); if (m) m.textContent = ' ' + (r.message || 'Done.'); await novaBoostLoad(); }
+  catch (e) { if (m) m.textContent = ' ' + e.message; }
+}
 let novaBoostList=[];
 async function novaBoostLoad(){const el=document.getElementById('novaBoostRows');if(!el)return;el.innerHTML='<tr><td colspan="7">Loading Nova Solution catalogue…</td></tr>';try{novaBoostList=await aFetch('/api/admin/boost2/services');novaBoostRender()}catch(e){el.innerHTML='<tr><td colspan="7">'+esc(e.message)+'</td></tr>'}}
 function novaBoostRender(){const el=document.getElementById('novaBoostRows');if(!el)return;const q=(document.getElementById('novaBoostSearch')?.value||'').toLowerCase();const rows=novaBoostList.filter(s=>s.name.toLowerCase().includes(q)||s.category.toLowerCase().includes(q));el.innerHTML=rows.map(s=>`<tr><td>${esc(s.name)}<br><small>${esc(s.category)} · ID ${s.id}</small></td><td>${m2N(s.cost)}</td><td><select id="nbm${s.id}"><option value="markup" ${s.price===s.cost?'selected':''}>Markup</option><option value="specific">Specific price</option></select></td><td><input id="nbs${s.id}" type="number" min="0" step="0.01" value="${s.price}" style="width:110px"></td><td><input id="nbk${s.id}" type="number" min="0" step="0.01" value="${Math.max(0,s.price-s.cost)}" style="width:100px"></td><td><input id="nbe${s.id}" type="checkbox" ${s.enabled?'checked':''}></td><td><button class="btn-sm" onclick="novaBoostSave(${s.id})">Save</button></td></tr>`).join('')||'<tr><td colspan="7">No matching services.</td></tr>'}

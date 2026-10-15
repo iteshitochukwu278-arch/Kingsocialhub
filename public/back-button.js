@@ -15,6 +15,8 @@
     bar.id = 'kslBackBar';
     bar.innerHTML = '<button type="button" aria-label="Go back">\u2190 Back</button>';
     bar.querySelector('button').onclick = function () {
+      if (path === '/boost1' || path === '/boost2') { location.href = '/boost'; return; }
+      if (path === '/boost') { location.href = '/dashboard'; return; }
       var sameSite = document.referrer && document.referrer.indexOf(location.origin) === 0;
       if (sameSite && history.length > 1) history.back(); else location.href = '/dashboard';
     };

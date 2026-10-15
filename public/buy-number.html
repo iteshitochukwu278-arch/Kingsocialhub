@@ -583,6 +583,7 @@ function AMT(n)   { return window.KLSMoney ? window.KLSMoney.amount(n) : '₦' +
 
       </div><!-- /numCountryStep -->
       <div class="step-label" id="numSvcStepLabel">Step 3 — Search &amp; pick the service</div>
+      <div id="numSyncRow" style="display:none;font-size:12.5px;opacity:.75;margin:-4px 0 8px"><span id="numSyncedAt"></span> <a href="#" id="numRefreshBtn" onclick="refreshNumServices();return false" style="margin-left:8px;font-weight:700;color:#16a34a">⟳ Refresh</a></div>
       <div class="sugg-wrap">
         <input class="srv-search" id="s1ServiceSearch" autocomplete="off" placeholder="Type a service — WhatsApp, Telegram, Google…"
                oninput="filterS1Services()" onfocus="filterS1Services()" disabled/>
@@ -915,7 +916,7 @@ function onNovaServerChange() {
 
 // Providers are fetched live for the chosen country — only ones admin has actually priced come
 // back, so an empty list here just means "nothing priced for this country yet", not an error.
-async function onNumCountryChange() {
+async function onNumCountryChange(refresh) {
   const country = document.getElementById('numCountrySelect').value;
   if (!selectedNovaServerId) { showToast('Select a server first'); return; }
   const providerSelect = document.getElementById('numProviderSelect');
@@ -938,12 +939,14 @@ async function onNumCountryChange() {
   providerSelect.disabled = true;
   providerValueText.textContent = 'Loading…';
   try {
-    numServices = await req(`/api/numbers/live-services?country=${encodeURIComponent(country)}&serverId=${encodeURIComponent(selectedNovaServerId)}`, 'GET', null, true);
+    numServices = await req(`/api/numbers/live-services?country=${encodeURIComponent(country)}&serverId=${encodeURIComponent(selectedNovaServerId)}${refresh === true ? '&refresh=1' : ''}`, 'GET', null, true);
+    const _sr = document.getElementById('numSyncRow');
+    if (_sr && Array.isArray(numServices) && numServices[0] && numServices[0].syncedAt) { _sr.style.display = 'block'; document.getElementById('numSyncedAt').textContent = (numServices[0].stale ? 'Showing saved list · ' : '') + 'Updated ' + new Date(numServices[0].syncedAt).toLocaleString(); }
     if (document.getElementById('numCountrySelect').value !== country) return; // customer changed country mid-load
     if (!Array.isArray(numServices) || !numServices.length) {
       numServices = [];
       providerSelect.innerHTML = '<option value="">No services in stock for this country right now</option>';
-      providerValueText.innerHTML = 'No services right now — <a href="#" onclick="onNumCountryChange();return false">tap to retry</a>';
+      providerValueText.innerHTML = 'No services right now — <a href="#" onclick="onNumCountryChange(true);return false">tap to retry</a>';
       return;
     }
     providerSelect.innerHTML = '<option value="">Select a provider…</option>' +
@@ -954,8 +957,14 @@ async function onNumCountryChange() {
   } catch (e) {
     numServices = [];
     providerSelect.innerHTML = '<option value="">Failed to load — try again</option>';
-    providerValueText.innerHTML = esc(e.message || 'Failed to load') + ' — <a href="#" onclick="onNumCountryChange();return false">tap to retry</a>';
+    providerValueText.innerHTML = esc(e.message || 'Failed to load') + ' — <a href="#" onclick="onNumCountryChange(true);return false">tap to retry</a>';
   }
+}
+
+async function refreshNumServices() {
+  const b = document.getElementById('numRefreshBtn'); if (b) b.textContent = 'Refreshing…';
+  await onNumCountryChange(true);
+  if (b) b.textContent = '⟳ Refresh';
 }
 
 function onNumProviderChange() {
