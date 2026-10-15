@@ -5829,24 +5829,32 @@ app.get('/api/numbers/options', async (req, res) => {
 });
 app.get('/api/numbers/nova-servers', optionalAuth, async (req, res) => {
  try {
-   // The 'usa' scope only lists the servers that carry USA numbers (about 3). Merge with the
-   // 'global' scope so every server the account can use is offered.
+   // 'usa' scope = servers that sell USA numbers; 'global' scope = all-countries servers.
+   // Keep the provider's own server names (e.g. "USA Server 1"), minus any brand word.
    const scopes = await Promise.allSettled(['usa', 'global'].map(scope => novaRequest('GET', '/catalog/numbers', { params: { scope } })));
-   const okScopes = scopes.filter(r => r.status === 'fulfilled').map(r => r.value);
-   if (!okScopes.length) throw scopes[0].reason;
+   if (scopes.every(r => r.status === 'rejected')) throw scopes[0].reason;
+   const clean = n => String(n || '').replace(/nova\s*solution|novasolution|nova/ig, '').replace(/\s{2,}/g, ' ').replace(/^[\s\-–—:·|]+|[\s\-–—:·|]+$/g, '').trim();
    const seen = new Map();
-   for (const payload of okScopes) {
-     for (const s of novaServerRows(payload)) {
-       const id = Number(s.id);
-       if (Number.isInteger(id) && id > 0 && !seen.has(id)) seen.set(id, { id, name: `Server ${seen.size + 1}` });
-     }
-     // Servers that only appear on service rows (not in the servers list) are still valid.
-     for (const sv of novaServiceRows(payload)) {
-       const id = Number(sv.server_id ?? sv.serverId);
-       if (Number.isInteger(id) && id > 0 && !seen.has(id)) seen.set(id, { id, name: `Server ${seen.size + 1}` });
-     }
-   }
-   const servers = [...seen.values()].sort((a, b) => a.id - b.id).map((s, i) => ({ id: s.id, name: `Server ${i + 1}` }));
+   const add = (id, rawName, scope) => {
+     id = Number(id);
+     if (!Number.isInteger(id) || id <= 0) return;
+     const name = clean(rawName);
+     const prev = seen.get(id);
+     if (!prev) seen.set(id, { id, name, scope });
+     else { if (!prev.name && name) prev.name = name; if (scope === 'usa') prev.scope = 'usa'; }
+   };
+   ['usa', 'global'].forEach((scope, i) => {
+     if (scopes[i].status !== 'fulfilled') return;
+     for (const sv of novaServerRows(scopes[i].value)) add(sv.id, sv.name || sv.label || sv.title, scope);
+     for (const row of novaServiceRows(scopes[i].value)) add(row.server_id ?? row.serverId, row.server_name || row.server, scope);
+   });
+   let usaN = 0, allN = 0;
+   const servers = [...seen.values()].sort((x, y) => (x.scope === y.scope ? x.id - y.id : (x.scope === 'usa' ? -1 : 1)))
+     .map(sv => {
+       const isUsa = sv.scope === 'usa' || /\b(usa|united states)\b/i.test(sv.name);
+       const name = sv.name || (isUsa ? `USA Server ${++usaN}` : `All Countries Server ${++allN}`);
+       return { id: sv.id, name, scope: isUsa ? 'usa' : 'global' };
+     });
    res.set('Cache-Control', 'no-store'); res.json(servers);
  } catch (e) { novaErrorResponse(res, e); }
 });
@@ -5864,6 +5872,23 @@ app.get('/api/numbers/live-countries', optionalAuth, async (req, res) => {
    res.set('Cache-Control', 'no-store'); res.json([...unique.values()].sort((a,b)=>(b.pinned-a.pinned)||a.name.localeCompare(b.name)));
  } catch (e) { novaErrorResponse(res, e); }
 });
+// Reads every page of the number catalog (the provider may paginate) and returns all service rows.
+async function novaCatalogServices(params) {
+  const first = await novaRequest('GET', '/catalog/numbers', { params });
+  let rows = novaServiceRows(first);
+  let d = novaUnwrap(first), page = 1;
+  while ((d.has_more || first?.has_more || d.next_page) && page < 30) {
+    page++;
+    let next;
+    try { next = await novaRequest('GET', '/catalog/numbers', { params: { ...params, page } }); } catch (e) { break; }
+    const more = novaServiceRows(next);
+    if (!more.length) break;
+    rows = rows.concat(more);
+    d = novaUnwrap(next);
+    if (!d.has_more && !next?.has_more && !d.next_page) break;
+  }
+  return rows;
+}
 app.get('/api/numbers/live-services', optionalAuth, async (req, res) => {
  try {
    const country = String(req.query.country || '').trim();
@@ -5871,16 +5896,23 @@ app.get('/api/numbers/live-services', optionalAuth, async (req, res) => {
    const serverId = Number(req.query.serverId || req.query.server_id || 0);
    const resolved = await novaResolveCountry(country);
    const params = { scope: resolved.scope }; if (resolved.country) params.country = resolved.country;
-   const payload = await novaRequest('GET', '/catalog/numbers', { params });
-   const services = novaServiceRows(payload);
+   const services = await novaCatalogServices(params);
    const cfg = await getNumberServerConfig();
+   const sidOf = s => Number(s.server_id ?? s.serverId ?? s.server?.id);
+   // Only filter by server when the rows actually say which server they belong to.
+   const hasServerInfo = services.some(s => Number.isInteger(sidOf(s)) && sidOf(s) > 0);
+   const picked = (serverId && hasServerInfo) ? services.filter(s => sidOf(s) === serverId) : services;
+   const minorOf = s => { const m = Number(s.price_minor); if (Number.isFinite(m)) return m; const x = Number(s.price ?? s.cost); return Number.isFinite(x) ? Math.round(x * 100) : NaN; };
    res.set('Cache-Control', 'no-store');
-   res.json(services.filter(s => !serverId || Number(s.server_id ?? s.serverId) === serverId).map(s => ({
-     serviceId: String(s.id ?? s.service_id), provider: String(s.name || s.service || s.application || `Service ${s.id}`),
-     serverId: Number(s.server_id ?? s.serverId), serverName: String(s.server_name || s.server || ''),
-     price: novaServicePriceNgn(s, cfg), costNgn: Number(s.price_minor || 0) / 100, priceMinor: Number(s.price_minor || 0),
-     emoji: serviceEmoji(s.code || s.name, s.name), icon: serviceIconUrl(s.code || s.name, s.name), rawName: s.name || s.service || ''
-   })));
+   res.json(picked.map(s => {
+     const minor = minorOf(s);
+     return {
+       serviceId: String(s.id ?? s.service_id), provider: String(s.name || s.service || s.application || `Service ${s.id}`),
+       serverId: sidOf(s), serverName: String(s.server_name || s.server?.name || ''),
+       price: novaServicePriceNgn({ ...s, price_minor: minor }, cfg), costNgn: Number.isFinite(minor) ? minor / 100 : 0, priceMinor: Number.isFinite(minor) ? minor : 0,
+       emoji: serviceEmoji(s.code || s.name, s.name), icon: serviceIconUrl(s.code || s.name, s.name), rawName: s.name || s.service || ''
+     };
+   }).filter(x => x.price != null && x.price > 0));
  } catch (e) { novaErrorResponse(res, e); }
 });
 function novaHttpError(status, message, extra) {
@@ -5916,9 +5948,11 @@ async function novaPurchaseNumber({ userId, serviceId, serverId, countryCode, ex
   }
   const resolvedCountry = await novaResolveCountry(countryCode);
   const catalogParams = { scope: resolvedCountry.scope }; if (resolvedCountry.country) catalogParams.country = resolvedCountry.country;
-  const catalogPayload = await novaRequest('GET', '/catalog/numbers', { params: catalogParams });
-  const services = novaServiceRows(catalogPayload);
-  const service = services.find(x => Number(x.id ?? x.service_id) === serviceId && Number(x.server_id ?? x.serverId) === serverId);
+  const services = await novaCatalogServices(catalogParams);
+  const sidOf = x => Number(x.server_id ?? x.serverId ?? x.server?.id);
+  const hasServerInfo = services.some(x => Number.isInteger(sidOf(x)) && sidOf(x) > 0);
+  let service = services.find(x => Number(x.id ?? x.service_id) === serviceId && (!hasServerInfo || sidOf(x) === serverId));
+  if (service && !Number.isFinite(Number(service.price_minor)) && Number.isFinite(Number(service.price ?? service.cost))) service = { ...service, price_minor: Math.round(Number(service.price ?? service.cost) * 100) };
   if (!service) throw novaHttpError(400, 'That service is no longer available on this server. Refresh and choose again.', { code: 'SERVICE_UNAVAILABLE' });
   const sellPrice = novaServicePriceNgn(service, cfg, { api: pricing === 'api' });
   if (!Number.isFinite(sellPrice) || sellPrice <= 0) throw novaHttpError(400, 'No valid price is available for this service right now.');
