@@ -6036,6 +6036,8 @@ async function novaGetCatalog(params, opts = {}) {
   }
 }
 async function novaCatalogServices(params, opts) { return (await novaGetCatalog(params, opts)).services || []; }
+// Pre-load the two main catalogues shortly after boot so the first customer isn't waiting on the provider.
+setTimeout(() => { novaGetCatalog({ scope: 'usa' }).catch(() => {}); novaGetCatalog({ scope: 'global' }).catch(() => {}); }, 6000);
 
 // Admin "Sync all": pulls the server/country lists and every country's services, one at a time
 // with a short pause so the provider is never hammered. Old data stays if a country fails.
@@ -6588,34 +6590,125 @@ app.get('/api/numbers/servers', async (req, res) => {
  } catch (e) { res.status(500).json({ error: 'Failed to load servers' }); }
 });
 
-let _grizzlyServicesCache = null, _grizzlyServicesAt = 0;
+// ── Server 2 data store ─────────────────────────────────────────────────────
+// Same idea as Server 1's stored catalogue: everything the picker needs is kept in memory AND in
+// the database, so customers are answered instantly from the stored copy. Refreshing from the
+// provider happens in the background (stale-while-revalidate) and never makes a customer wait.
+// Buying still re-checks live stock and price with the provider before any money is taken.
+const GrizzlyCache = mongoose.models.GrizzlyCache || mongoose.model('GrizzlyCache', new mongoose.Schema({
+ key: { type: String, unique: true, index: true },
+ payload: { type: mongoose.Schema.Types.Mixed },
+ syncedAt: { type: Date, default: Date.now }
+}, { minimize: false }));
+function gzSave(key, payload) { return GrizzlyCache.updateOne({ key }, { $set: { payload, syncedAt: new Date() } }, { upsert: true }).catch(() => {}); }
+async function gzLoad(key) { try { return await GrizzlyCache.findOne({ key }).lean(); } catch (e) { return null; } }
+
+let _grizzlyServicesCache = null, _grizzlyServicesAt = 0, _grizzlyServicesJob = null;
+let _grizzlyCountriesCache = null, _grizzlyCountriesAt = 0, _grizzlyCountriesJob = null;
+const GRIZZLY_LIST_TTL = 60 * 60 * 1000;
+function refreshGrizzlyServices() {
+ if (_grizzlyServicesJob) return _grizzlyServicesJob;
+ _grizzlyServicesJob = (async () => {
+  const r = await grizzlyRequest('getServicesList');
+  const list = (r.services || []).map(s => ({
+   code: s.code,
+   name: prettifyServiceName(s.name),
+   emoji: serviceEmoji(s.code, s.name),
+   icon: serviceIconUrl(s.code, s.name),
+   popular: POPULAR_SERVICE_CODES.includes(String(s.code).toLowerCase())
+  }));
+  if (list.length) { _grizzlyServicesCache = list; _grizzlyServicesAt = Date.now(); gzSave('services', list); }
+  return _grizzlyServicesCache || list;
+ })().finally(() => { _grizzlyServicesJob = null; });
+ return _grizzlyServicesJob;
+}
+// Instant answer from memory, else from the database copy, else (first ever time) the provider.
 async function getGrizzlyServices() {
- if (_grizzlyServicesCache && Date.now() - _grizzlyServicesAt < 60 * 60 * 1000) return _grizzlyServicesCache;
- const r = await grizzlyRequest('getServicesList');
- _grizzlyServicesCache = (r.services || []).map(s => ({
- code: s.code,
- name: prettifyServiceName(s.name),
- emoji: serviceEmoji(s.code, s.name),
- icon: serviceIconUrl(s.code, s.name),
- popular: POPULAR_SERVICE_CODES.includes(String(s.code).toLowerCase())
- }));
- _grizzlyServicesAt = Date.now();
- return _grizzlyServicesCache;
+ if (!_grizzlyServicesCache) {
+  const d = await gzLoad('services');
+  if (d && Array.isArray(d.payload) && d.payload.length) { _grizzlyServicesCache = d.payload; _grizzlyServicesAt = new Date(d.syncedAt).getTime(); }
+ }
+ if (_grizzlyServicesCache) {
+  if (Date.now() - _grizzlyServicesAt >= GRIZZLY_LIST_TTL) refreshGrizzlyServices().catch(() => {});
+  return _grizzlyServicesCache;
+ }
+ return refreshGrizzlyServices();
 }
-let _grizzlyCountriesCache = null, _grizzlyCountriesAt = 0;
+function refreshGrizzlyCountries() {
+ if (_grizzlyCountriesJob) return _grizzlyCountriesJob;
+ _grizzlyCountriesJob = (async () => {
+  const r = await grizzlyRequest('getCountries');
+  const list = Object.values(r || {})
+   .filter(c => c && c.visible !== 0)
+   .map(c => {
+    const name = c.eng || c.rus || String(c.id);
+    return { id: String(c.id), name, flag: countryFlag(name) };
+   });
+  if (list.length) { _grizzlyCountriesCache = list; _grizzlyCountriesAt = Date.now(); gzSave('countries', list); }
+  return _grizzlyCountriesCache || list;
+ })().finally(() => { _grizzlyCountriesJob = null; });
+ return _grizzlyCountriesJob;
+}
 async function getGrizzlyCountries() {
- if (_grizzlyCountriesCache && Date.now() - _grizzlyCountriesAt < 60 * 60 * 1000) return _grizzlyCountriesCache;
- const r = await grizzlyRequest('getCountries');
- const list = Object.values(r || {})
- .filter(c => c && c.visible !== 0)
- .map(c => {
- const name = c.eng || c.rus || String(c.id);
- return { id: String(c.id), name, flag: countryFlag(name) };
- });
- _grizzlyCountriesCache = list;
- _grizzlyCountriesAt = Date.now();
- return _grizzlyCountriesCache;
+ if (!_grizzlyCountriesCache) {
+  const d = await gzLoad('countries');
+  if (d && Array.isArray(d.payload) && d.payload.length) { _grizzlyCountriesCache = d.payload; _grizzlyCountriesAt = new Date(d.syncedAt).getTime(); }
+ }
+ if (_grizzlyCountriesCache) {
+  if (Date.now() - _grizzlyCountriesAt >= GRIZZLY_LIST_TTL) refreshGrizzlyCountries().catch(() => {});
+  return _grizzlyCountriesCache;
+ }
+ return refreshGrizzlyCountries();
 }
+// Generic stale-while-revalidate cache with request de-duplication.
+function makeSwrCache({ fresh, hardMax, max = 400, fetcher, persistKey }) {
+ const store = new Map(), jobs = new Map();
+ function refresh(k, args) {
+  if (jobs.has(k)) return jobs.get(k);
+  const job = fetcher(...args).then(data => {
+   store.set(k, { at: Date.now(), data });
+   if (store.size > max) store.delete(store.keys().next().value);
+   if (persistKey) gzSave(persistKey(k), data);
+   return data;
+  }).finally(() => jobs.delete(k));
+  jobs.set(k, job);
+  return job;
+ }
+ return async function get(k, ...args) {
+  let hit = store.get(k);
+  if (!hit && persistKey) {
+   const d = await gzLoad(persistKey(k));
+   if (d && d.payload && Date.now() - new Date(d.syncedAt).getTime() < hardMax) { hit = { at: new Date(d.syncedAt).getTime(), data: d.payload }; store.set(k, hit); }
+  }
+  if (hit && Date.now() - hit.at < hardMax) {
+   if (Date.now() - hit.at >= fresh) refresh(k, args).catch(() => {});
+   return hit.data;
+  }
+  try { return await refresh(k, args); } catch (e) { if (hit) return hit.data; throw e; }
+ };
+}
+// Stock + price per country for ONE service (drives the country list).
+const _grizzlyPricesSwr = makeSwrCache({
+ fresh: 20 * 1000, hardMax: 6 * 60 * 60 * 1000,
+ fetcher: service => grizzlyRequest('getPrices', { service }),
+ persistKey: k => 'prices:' + k
+});
+const getGrizzlyPricesCached = service => _grizzlyPricesSwr(service, service);
+// Pools (price tiers) for one service + country (drives the provider list).
+const getGrizzlyPoolsCached = makeSwrCache({
+ fresh: 15 * 1000, hardMax: 30 * 60 * 1000,
+ fetcher: (service, country) => grizzlyRequest('getPricesV2', { service, country })
+});
+// Warm everything the picker needs right after boot, then keep it fresh in the background.
+function warmGrizzly() {
+ getGrizzlyServices().catch(() => {});
+ getGrizzlyCountries().catch(() => {});
+ POPULAR_SERVICE_CODES.forEach((c, i) => setTimeout(() => getGrizzlyPricesCached(c).catch(() => {}), 1200 * (i + 1)));
+}
+setTimeout(warmGrizzly, 4000);
+setInterval(() => { refreshGrizzlyServices().catch(() => {}); refreshGrizzlyCountries().catch(() => {}); }, 45 * 60 * 1000);
+// Keep the popular services' stock fresh so the first tap is always instant.
+setInterval(() => { POPULAR_SERVICE_CODES.forEach((c, i) => setTimeout(() => getGrizzlyPricesCached(c).catch(() => {}), 1500 * i)); }, 5 * 60 * 1000);
 
 async function requireServer2(res) {
  const cfg = await getNumberServerConfig();
@@ -6648,8 +6741,7 @@ app.get('/api/numbers/server2/countries', async (req, res) => {
  if (!cfg) return;
  const service = String(req.query.service || '').trim();
  if (!service) return res.status(400).json({ error: 'service is required' });
- const prices = await grizzlyRequest('getPrices', { service });
- const countries = await getGrizzlyCountries();
+ const [prices, countries] = await Promise.all([getGrizzlyPricesCached(service), getGrizzlyCountries()]);
  const byId = new Map(countries.map(c => [c.id, c]));
  const out = [];
  for (const [countryId, services] of Object.entries(prices || {})) {
@@ -6675,9 +6767,8 @@ app.get('/api/numbers/server2/providers', async (req, res) => {
  const service = String(req.query.service || '').trim();
  const country = String(req.query.country || '').trim();
  if (!service || !country) return res.status(400).json({ error: 'service and country are required' });
- const data = await grizzlyRequest('getPricesV2', { service, country });
+ const [data, countries] = await Promise.all([getGrizzlyPoolsCached(service + '|' + country, service, country), getGrizzlyCountries()]);
  const tiers = data?.[country]?.[service] || {};
- const countries = await getGrizzlyCountries();
  const meta = countries.find(c => c.id === String(country));
  const availableTiers = Object.entries(tiers).filter(([, count]) => Number(count) > 0)
    .sort(([a], [b]) => Number(a) - Number(b));
