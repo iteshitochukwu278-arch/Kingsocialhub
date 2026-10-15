@@ -694,7 +694,7 @@ async function grizzlyRequest(action, params = {}) {
 // Grizzly's dollar cost, and the flat-naira profit ladder used for markup.
 const numberServerConfigSchema = new mongoose.Schema({
   key: { type: String, default: 'main', unique: true },
-  server1Enabled: { type: Boolean, default: true },   // NovaSolution live number catalog
+  server1Enabled: { type: Boolean, default: true },   // the provider live number catalog
   // Server 1 profit ladder (₦ added on top of the live NovaSolution cost).
   server1MarkupTiers: {
     type: [{ upTo: Number, profit: Number }],
@@ -5616,7 +5616,7 @@ async function releaseNumberOnProvider(listing) {
  if (listing.novaSessionId) {
  try {
    const result = await novaRequest('POST', `/numbers/sessions/${encodeURIComponent(listing.novaSessionId)}/cancel`);
-   listing.providerCancelled = true; listing.providerCancelDetail = 'NovaSolution cancellation requested';
+   listing.providerCancelled = true; listing.providerCancelDetail = 'provider cancellation requested';
    return { ok: true, detail: result };
  } catch (e) {
    listing.providerCancelled = false; listing.providerCancelDetail = String(e.message || e).slice(0, 200);
@@ -5680,7 +5680,7 @@ async function retryFailedNovaCancellations() {
     for (const l of rows) {
       try {
         await novaRequest('POST', `/numbers/sessions/${encodeURIComponent(l.novaSessionId)}/cancel`);
-        await NumberListing.updateOne({ _id: l._id }, { $set: { providerCancelled: true, providerCancelDetail: 'NovaSolution cancellation confirmed on retry' }, $inc: { providerCancelAttempts: 1 } });
+        await NumberListing.updateOne({ _id: l._id }, { $set: { providerCancelled: true, providerCancelDetail: 'provider cancellation confirmed on retry' }, $inc: { providerCancelAttempts: 1 } });
       } catch (e) {
         await NumberListing.updateOne({ _id: l._id }, { $set: { providerCancelDetail: String(e.message || e).slice(0, 200) }, $inc: { providerCancelAttempts: 1 } });
       }
@@ -5710,12 +5710,12 @@ app.post('/api/admin/numbers/:id/resolve', adminAuth, async (req, res) => {
     if (action === 'confirm') {
       const phoneNumber = String(req.body.phoneNumber || '').trim();
       const sessionId = String(req.body.sessionId || '').trim();
-      if (!phoneNumber || !sessionId) return res.status(400).json({ error: 'phoneNumber and sessionId (from the NovaSolution dashboard) are required' });
+      if (!phoneNumber || !sessionId) return res.status(400).json({ error: 'phoneNumber and sessionId (from the provider dashboard) are required' });
       const expiresAt = req.body.expiresAt ? new Date(req.body.expiresAt) : new Date(Date.now() + NUMBER_RENTAL_WINDOW_MS);
       if (isNaN(expiresAt)) return res.status(400).json({ error: 'expiresAt is not a valid date' });
       const l = await NumberListing.findOneAndUpdate({ _id: req.params.id, status: 'needs_review' }, { $set: { status: 'sold', phoneNumber, novaSessionId: sessionId, novaOrderNumber: phoneNumber, expiresAt, providerError: '' } }, { new: true });
       if (!l) return res.status(409).json({ error: 'Order is not awaiting review (already resolved?)' });
-      try { await Transaction.create({ userId: l.soldTo, type: 'purchase', amount: l.sellPrice, description: `Rented ${l.provider} number (${l.country}) via NovaSolution`, status: 'success' }); } catch (_) {}
+      try { await Transaction.create({ userId: l.soldTo, type: 'purchase', amount: l.sellPrice, description: `Rented ${l.provider} number (${l.country}) via the provider`, status: 'success' }); } catch (_) {}
       return res.json({ status: 'sold', orderId: l._id, phoneNumber });
     }
     res.status(400).json({ error: "action must be 'refund' or 'confirm'" });
@@ -5735,7 +5735,7 @@ const novaAxios = axios.create({
 });
 async function novaRequest(method, path, options = {}) {
   if (!process.env.NOVA_API_KEY) {
-    const e = new Error('NovaSolution API key is not configured. Add NOVA_API_KEY in Render Environment.');
+    const e = new Error('This service is not available right now. Please contact the administrator.');
     e.status = 503;
     throw e;
   }
@@ -5745,7 +5745,7 @@ async function novaRequest(method, path, options = {}) {
   } catch (err) {
     const status = err.response?.status || err.status || 502;
     const message = err.response?.data?.message || err.response?.data?.error ||
-      (status === 502 ? 'NovaSolution could not be reached. Please try again.' : 'NovaSolution request failed.');
+      (status === 502 ? 'The service could not be reached. Please try again.' : 'Request failed. Please try again.');
     const e = new Error(message);
     e.status = status;
     e.provider = true;
@@ -5758,7 +5758,7 @@ async function novaRequest(method, path, options = {}) {
 function novaErrorResponse(res, err) {
   const status = Number(err.status) || 502;
   return res.status(status >= 400 && status <= 599 ? status : 502)
-    .json({ error: err.message || 'NovaSolution request failed', details: err.details || undefined });
+    .json({ error: err.message || 'Request failed', details: err.details || undefined });
 }
 
 function novaUnwrap(payload) {
@@ -5829,8 +5829,24 @@ app.get('/api/numbers/options', async (req, res) => {
 });
 app.get('/api/numbers/nova-servers', optionalAuth, async (req, res) => {
  try {
-   const payload = await novaRequest('GET', '/catalog/numbers', { params: { scope: 'usa' } });
-   const servers = novaServerRows(payload).map(s => ({ id: Number(s.id), name: String(s.name || s.label || `Server ${s.id}`) })).filter(s => Number.isInteger(s.id) && s.id > 0);
+   // The 'usa' scope only lists the servers that carry USA numbers (about 3). Merge with the
+   // 'global' scope so every server the account can use is offered.
+   const scopes = await Promise.allSettled(['usa', 'global'].map(scope => novaRequest('GET', '/catalog/numbers', { params: { scope } })));
+   const okScopes = scopes.filter(r => r.status === 'fulfilled').map(r => r.value);
+   if (!okScopes.length) throw scopes[0].reason;
+   const seen = new Map();
+   for (const payload of okScopes) {
+     for (const s of novaServerRows(payload)) {
+       const id = Number(s.id);
+       if (Number.isInteger(id) && id > 0 && !seen.has(id)) seen.set(id, { id, name: `Server ${seen.size + 1}` });
+     }
+     // Servers that only appear on service rows (not in the servers list) are still valid.
+     for (const sv of novaServiceRows(payload)) {
+       const id = Number(sv.server_id ?? sv.serverId);
+       if (Number.isInteger(id) && id > 0 && !seen.has(id)) seen.set(id, { id, name: `Server ${seen.size + 1}` });
+     }
+   }
+   const servers = [...seen.values()].sort((a, b) => a.id - b.id).map((s, i) => ({ id: s.id, name: `Server ${i + 1}` }));
    res.set('Cache-Control', 'no-store'); res.json(servers);
  } catch (e) { novaErrorResponse(res, e); }
 });
@@ -5894,9 +5910,9 @@ async function novaPlaceOrder(serviceId, idempotencyKey) {
 // pricing: 'customer' (normal markup) or 'api' (apiProfitPercent % of the markup).
 async function novaPurchaseNumber({ userId, serviceId, serverId, countryCode, expectedPrice, pricing }) {
   const cfg = await getNumberServerConfig();
-  if (!cfg.server1Enabled) throw novaHttpError(400, 'NovaSolution number purchases are temporarily disabled.');
+  if (!cfg.server1Enabled) throw novaHttpError(400, 'Number purchases are temporarily disabled.');
   if (!Number.isInteger(serviceId) || serviceId <= 0 || !countryCode || !Number.isInteger(serverId) || serverId <= 0) {
-    throw novaHttpError(400, 'Select a NovaSolution server, country and service before purchasing.');
+    throw novaHttpError(400, 'Select a server, country and service before purchasing.');
   }
   const resolvedCountry = await novaResolveCountry(countryCode);
   const catalogParams = { scope: resolvedCountry.scope }; if (resolvedCountry.country) catalogParams.country = resolvedCountry.country;
@@ -5905,7 +5921,7 @@ async function novaPurchaseNumber({ userId, serviceId, serverId, countryCode, ex
   const service = services.find(x => Number(x.id ?? x.service_id) === serviceId && Number(x.server_id ?? x.serverId) === serverId);
   if (!service) throw novaHttpError(400, 'That service is no longer available on this server. Refresh and choose again.', { code: 'SERVICE_UNAVAILABLE' });
   const sellPrice = novaServicePriceNgn(service, cfg, { api: pricing === 'api' });
-  if (!Number.isFinite(sellPrice) || sellPrice <= 0) throw novaHttpError(400, 'NovaSolution did not return a valid price for this service.');
+  if (!Number.isFinite(sellPrice) || sellPrice <= 0) throw novaHttpError(400, 'No valid price is available for this service right now.');
   // Price lock: the caller sends the price the customer confirmed; never charge a different amount silently.
   const expected = Number(expectedPrice);
   const hasExpected = expectedPrice !== undefined && expectedPrice !== null && expectedPrice !== '' && Number.isFinite(expected);
@@ -5926,7 +5942,7 @@ async function novaPurchaseNumber({ userId, serviceId, serverId, countryCode, ex
       let held = null;
       try {
         held = await NumberListing.create({
-          provider: String(service.name || service.service || service.application || 'NovaSolution'),
+          provider: String(service.name || service.service || service.application || 'Number'),
           country: String(countryCode), phoneNumber: 'pending-review',
           cost: Number(service.price_minor || 0) / 100, sellPrice, status: 'needs_review', soldTo: userId, soldAt: new Date(),
           server: 'server1', novaServiceId: serviceId, novaServerId: serverId, novaIdempotencyKey: idempotencyKey,
@@ -5939,7 +5955,7 @@ async function novaPurchaseNumber({ userId, serviceId, serverId, countryCode, ex
       throw novaHttpError(502, 'We could not confirm this order with the provider. Your payment is on hold while we check — if no number was issued you will be refunded in full. Please do not retry yet.', { code: 'ORDER_UNCONFIRMED', orderId: held?._id });
     }
     await User.updateOne({ _id: userId }, { $inc: { balance: sellPrice } });
-    await Transaction.create({ userId, type: 'admin_credit', amount: sellPrice, description: 'Refund: NovaSolution rejected the number order', status: 'success' });
+    await Transaction.create({ userId, type: 'admin_credit', amount: sellPrice, description: 'Refund: the provider rejected the number order', status: 'success' });
     throw providerErr;
   }
   const pd = novaUnwrap(providerResult);
@@ -5952,14 +5968,14 @@ async function novaPurchaseNumber({ userId, serviceId, serverId, countryCode, ex
   if (actualCostNgn !== null && actualCostNgn >= sellPrice) {
     try { if (sessionId) await novaRequest('POST', `/numbers/sessions/${encodeURIComponent(sessionId)}/cancel`); } catch (_) {}
     await User.updateOne({ _id: userId }, { $inc: { balance: sellPrice } });
-    await Transaction.create({ userId, type: 'admin_credit', amount: sellPrice, description: 'Refund: NovaSolution price exceeded the configured customer price', status: 'success' });
-    throw novaHttpError(409, 'NovaSolution pricing changed during checkout. Your wallet was refunded; refresh the catalog and try again.', { code: 'PRICE_CHANGED' });
+    await Transaction.create({ userId, type: 'admin_credit', amount: sellPrice, description: 'Refund: the provider price exceeded the configured customer price', status: 'success' });
+    throw novaHttpError(409, 'Pricing changed during checkout. Your wallet was refunded; refresh the catalog and try again.', { code: 'PRICE_CHANGED' });
   }
   if (!phoneNumber || !sessionId) {
     try { if (sessionId) await novaRequest('POST', `/numbers/sessions/${encodeURIComponent(sessionId)}/cancel`); } catch (_) {}
     await User.updateOne({ _id: userId }, { $inc: { balance: sellPrice } });
-    await Transaction.create({ userId, type: 'admin_credit', amount: sellPrice, description: 'Refund: NovaSolution returned an incomplete number order', status: 'success' });
-    throw novaHttpError(502, 'NovaSolution returned an incomplete order. Your wallet has been refunded; please try again.');
+    await Transaction.create({ userId, type: 'admin_credit', amount: sellPrice, description: 'Refund: the provider returned an incomplete number order', status: 'success' });
+    throw novaHttpError(502, 'The order came back incomplete. Your wallet has been refunded; please try again.');
   }
   let listing;
   let serverName = `Server ${serverId}`;
@@ -5970,7 +5986,7 @@ async function novaPurchaseNumber({ userId, serviceId, serverId, countryCode, ex
     serverName = String(serverRow.name || serverName);
     const countryRow = countries.find(x => String(x.code || x.country_code || x.iso2 || '').toLowerCase() === String(countryCode).toLowerCase()) || {};
     listing = await NumberListing.create({
-      provider: String(service.name || service.service || service.application || 'NovaSolution'),
+      provider: String(service.name || service.service || service.application || 'Number'),
       country: String(session.country || countryRow.name || countryRow.country_name || countryCode),
       phoneNumber, cost: actualCostNgn !== null ? actualCostNgn : Number(service.price_minor || 0) / 100, sellPrice, status: 'sold', soldTo: userId, soldAt: new Date(),
       expiresAt: session.expires_at ? new Date(session.expires_at) : new Date(Date.now() + NUMBER_RENTAL_WINDOW_MS),
@@ -5980,24 +5996,24 @@ async function novaPurchaseNumber({ userId, serviceId, serverId, countryCode, ex
   } catch (saveErr) {
     try { await novaRequest('POST', `/numbers/sessions/${encodeURIComponent(sessionId)}/cancel`); } catch (_) {}
     await User.updateOne({ _id: userId }, { $inc: { balance: sellPrice } });
-    await Transaction.create({ userId, type: 'admin_credit', amount: sellPrice, description: 'Refund: NovaSolution order could not be saved locally', status: 'success' });
+    await Transaction.create({ userId, type: 'admin_credit', amount: sellPrice, description: 'Refund: the provider order could not be saved locally', status: 'success' });
     throw saveErr;
   }
   // The provider order and local listing now exist. Do not refund a valid number just
   // because the transaction-log or referral subsystem has a temporary database error.
-  try { await Transaction.create({ userId, type: 'purchase', amount: sellPrice, description: `Rented ${listing.provider} number (${listing.country}) via NovaSolution / ${serverName}${pricing === 'api' ? ' (API)' : ''}`, status: 'success' }); }
-  catch (txErr) { console.error('NovaSolution purchase transaction log failed:', txErr.message); }
-  creditReferralCommission(debitedUser, sellPrice, `${listing.provider} number (${listing.country})`).catch(err => console.error('NovaSolution referral credit failed:', err.message));
+  try { await Transaction.create({ userId, type: 'purchase', amount: sellPrice, description: `Rented ${listing.provider} number (${listing.country}) via ${serverName}${pricing === 'api' ? ' (API)' : ''}`, status: 'success' }); }
+  catch (txErr) { console.error('the provider purchase transaction log failed:', txErr.message); }
+  creditReferralCommission(debitedUser, sellPrice, `${listing.provider} number (${listing.country})`).catch(err => console.error('the provider referral credit failed:', err.message));
   return { listing, sellPrice, sessionId, serverName };
 }
 function novaPurchaseErrorResponse(res, e) {
-  console.error('NovaSolution number purchase failed:', e.message);
+  console.error('the provider number purchase failed:', e.message);
   let st = Number(e.status);
   if (!(st >= 400 && st <= 599)) st = 500;
   // A provider-side 401/403 means OUR Nova key is wrong; never send that to the customer as 401
   // (the browser would treat it as "you are logged out").
   if (e.provider && (st === 401 || st === 403)) st = 502;
-  const body = { error: e.message || 'Failed to buy number from NovaSolution.' };
+  const body = { error: e.message || 'Failed to buy number from the provider.' };
   if (typeof e.code === 'string') body.code = e.code;
   if (e.newPrice) body.newPrice = e.newPrice;
   if (e.orderId) body.orderId = e.orderId;
@@ -6342,7 +6358,7 @@ app.get('/api/numbers/servers', async (req, res) => {
  try {
  const cfg = await getNumberServerConfig();
  res.json([
- { id: 'server1', name: 'Server 1 — NovaSolution Numbers', description: 'NovaSolution live catalog with server-linked services and live prices.', enabled: !!cfg.server1Enabled },
+ { id: 'server1', name: 'Server 1', description: 'Live server catalog with services and live prices.', enabled: !!cfg.server1Enabled },
  { id: 'server2', name: 'Server 2 — All services & countries', description: 'Hundreds of services and countries, live stock and live prices.', enabled: !!cfg.server2Enabled, providerMode: cfg.server2ProviderMode || 'pools', defaultOperator: cfg.server2DefaultOperator || 'any' }
  ]);
  } catch (e) { res.status(500).json({ error: 'Failed to load servers' }); }
