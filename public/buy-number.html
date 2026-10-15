@@ -248,6 +248,12 @@ function AMT(n)   { return window.KLSMoney ? window.KLSMoney.amount(n) : '₦' +
   <link rel="stylesheet" href="/brand.css"/>
   <link rel="stylesheet" href="/css/mobile-fix.css">
 <script src="/js/kls-ui.js?v=1"></script>
+<script>
+/* Safety net: if the pop-up helper file failed to load, still ask before spending money (never silently do nothing). */
+if (typeof window.kslConfirm !== 'function') {
+  window.kslConfirm = function (m) { return Promise.resolve(window.confirm(m)); };
+}
+</script>
 </head>
 <body>
 <!-- Shared UI icon sprite (replaces emoji site-wide) — referenced via <svg class="icon i-NAME"><use href="#i-NAME"/></svg> -->
@@ -1119,7 +1125,9 @@ async function buyNumber() {
   const match = numServices.find(s => s.serviceId === serviceId);
   if (!serviceId || !country || !match) return setFb(fb, 'Please select a country and provider', 'err');
   if (!bnToken) { window.location.href = '/login'; return; }
-  if (!await kslConfirm(`Buy this number for ${PRICE(match.price)}? This will be deducted from your wallet now, and automatically refunded if no code arrives within 20 minutes.`)) return;
+  const _srv = numNovaServers.find(x => String(x.id) === String(selectedNovaServerId));
+  const _cty = numCountries.find(x => x.code === country);
+  if (!await kslConfirm(`Buy a ${match.provider} number${_cty ? ' (' + _cty.name + ')' : ''}${_srv ? ' on ' + _srv.name : ''} for ${PRICE(match.price)}? It is deducted from your wallet now and automatically refunded if no code arrives within 20 minutes. You can also cancel for a full refund while you wait.`, { title: 'Confirm purchase', okText: 'Yes, buy it', cancelText: 'No, go back' })) return;
 
   btn.disabled = true; btn.textContent = 'Placing your order…'; setFb(fb, 'Placing your order — this can take up to a minute. Please don’t close the page.', 'ok');
   try {
