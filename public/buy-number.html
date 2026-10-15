@@ -563,6 +563,7 @@ function AMT(n)   { return window.KLSMoney ? window.KLSMoney.amount(n) : '₦' +
         <div class="st-icon">🖥️</div><div class="st-body"><div class="st-label">Server</div><div class="st-value">Choose the server that offers your service</div></div>
         <select id="numNovaServerSelect" onchange="onNovaServerChange()"><option value="">Loading servers…</option></select>
       </div>
+      <div id="numCountryStep">
       <div class="step-label">Step 2 — Search &amp; pick the country</div>
       <div class="sugg-wrap">
         <input class="srv-search" id="s1CountrySearch" autocomplete="off" placeholder="Type a country — USA, Canada, UK…"
@@ -580,7 +581,8 @@ function AMT(n)   { return window.KLSMoney ? window.KLSMoney.amount(n) : '₦' +
         <select id="numCountrySelect" autocomplete="off" onchange="s1UserPickedCountry = true; onNumCountryChange()"><option value="">Loading…</option></select>
       </div>
 
-      <div class="step-label">Step 3 — Search &amp; pick the service</div>
+      </div><!-- /numCountryStep -->
+      <div class="step-label" id="numSvcStepLabel">Step 3 — Search &amp; pick the service</div>
       <div class="sugg-wrap">
         <input class="srv-search" id="s1ServiceSearch" autocomplete="off" placeholder="Type a service — WhatsApp, Telegram, Google…"
                oninput="filterS1Services()" onfocus="filterS1Services()" disabled/>
@@ -890,10 +892,25 @@ async function loadNumOptions() {
 function onNovaServerChange() {
   selectedNovaServerId = document.getElementById('numNovaServerSelect').value;
   clearS1Selection();
+  const srv = numNovaServers.find(s => String(s.id) === String(selectedNovaServerId));
+  const isUsa = !!(srv && srv.scope === 'usa');
+  const countryStep = document.getElementById('numCountryStep');
+  const svcLabel = document.getElementById('numSvcStepLabel');
   const countrySelect = document.getElementById('numCountrySelect');
   countrySelect.disabled = !selectedNovaServerId;
   document.getElementById('s1CountrySearch').disabled = !selectedNovaServerId;
-  document.getElementById('s1CountrySearch').placeholder = selectedNovaServerId ? 'Type a country — USA, Canada, UK…' : 'Select a server first';
+  document.getElementById('s1CountrySearch').placeholder = selectedNovaServerId ? 'Type a country — UK, Ghana, India…' : 'Select a server first';
+  // USA servers only sell USA numbers: skip the country step and go straight to services.
+  if (countryStep) countryStep.style.display = isUsa ? 'none' : '';
+  if (svcLabel) svcLabel.textContent = isUsa ? 'Step 2 — Search & pick the service' : 'Step 3 — Search & pick the service';
+  if (isUsa) {
+    const usa = numCountries.find(c => /^(us|usa)$/i.test(String(c.code)) || /united states/i.test(c.name));
+    const code = usa ? usa.code : 'USA';
+    if (![...countrySelect.options].some(o => o.value === code)) countrySelect.insertAdjacentHTML('beforeend', `<option value="${esc(code)}">🇺🇸 USA</option>`);
+    countrySelect.value = code;
+    s1UserPickedCountry = true;
+    onNumCountryChange();
+  }
 }
 
 // Providers are fetched live for the chosen country — only ones admin has actually priced come

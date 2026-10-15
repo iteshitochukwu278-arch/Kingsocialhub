@@ -1,3 +1,4 @@
+(function(){try{if(window.__kslBackLoader)return;window.__kslBackLoader=true;var s=document.createElement('script');s.src='/js/back-button.js?v=1';s.defer=true;document.head.appendChild(s);}catch(e){}})();
 // ── CONFIG ─────────────────────────────────────────────────────
 const API = '';
 let WA_NUMBER = '2349065518402'; // overwritten on load by applySiteLinks() from admin-configured value
