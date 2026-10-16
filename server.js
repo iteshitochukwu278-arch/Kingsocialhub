@@ -116,7 +116,7 @@ const apiV1Limiter = rateLimit({
  trustProxy: true
 });
 app.use('/api/v1/', apiV1Limiter);
-app.use(express.json({ limit: '20mb' }));
+app.use(express.json({ limit: '20mb', verify: (req, res, buf) => { if ((req.originalUrl || '').startsWith('/api/webhooks/')) req.rawBody = buf; } })); // rawBody lets us verify Paystack's HMAC signature
 // ── KLS request console log ──────────────────────────────────────────────────
 // Every API call is logged with method, path, status, duration and the caller,
 // so any "it works for me but not for him" report can be traced in the server
@@ -379,6 +379,16 @@ const userSchema = new mongoose.Schema({
  flwRef: { type: String, default: '' }, // Flutterwave's own reference
  createdAt: { type: Date }
  },
+ paystackVirtualAccount: { // dedicated virtual account issued by Paystack (Nigeria)
+ enabled: { type: Boolean, default: false },
+ accountNumber: { type: String, default: '' },
+ bankName: { type: String, default: '' },
+ accountName: { type: String, default: '' },
+ customerCode: { type: String, default: '' }, // Paystack customer code (CUS_...) — how we match payments back to the user
+ customerId: { type: String, default: '' },
+ dedicatedAccountId: { type: String, default: '' },
+ createdAt: { type: Date }
+ },
  notificationsSeenAt: { type: Date, default: null },
  loginHistory: [{
  at: { type: Date, default: Date.now },
@@ -552,6 +562,39 @@ const paymentMethodSettingSchema = new mongoose.Schema({
  updatedAt: { type: Date, default: Date.now }
 });
 const PaymentMethodSetting = mongoose.model('PaymentMethodSetting', paymentMethodSettingSchema);
+// ── PAYMENT GATEWAYS (Flutterwave / Paystack) — switchable from the admin panel ──────────────
+// One row per gateway. No row yet = the built-in default: Flutterwave ON (so existing sites keep
+// working exactly as before) and Paystack OFF until an admin turns it on.
+const gatewaySettingSchema = new mongoose.Schema({
+ gateway: { type: String, enum: ['flutterwave', 'paystack'], required: true, unique: true },
+ enabled: { type: Boolean, default: true },
+ disabledMessage: { type: String, default: '' },
+ updatedAt: { type: Date, default: Date.now }
+});
+const GatewaySetting = mongoose.model('GatewaySetting', gatewaySettingSchema);
+const GATEWAY_LIST = ['flutterwave', 'paystack'];
+const GATEWAY_LABELS = { flutterwave: 'Flutterwave', paystack: 'Paystack' };
+const GATEWAY_DEFAULT_ENABLED = { flutterwave: true, paystack: false };
+function gatewayConfigured(g) {
+ if (g === 'flutterwave') return !!process.env.FLW_V3_SECRET_KEY;
+ if (g === 'paystack') return !!process.env.PAYSTACK_SECRET_KEY;
+ return false;
+}
+// { flutterwave: { enabled, configured, available, disabledMessage }, paystack: {...} }
+// `available` = switched ON by the admin AND its API keys exist on the server.
+async function getGatewayStates() {
+ let docs = [];
+ try { docs = await GatewaySetting.find({}); }
+ catch (e) { console.error('[KLS] getGatewayStates failed, using defaults:', e.message); }
+ const out = {};
+ for (const g of GATEWAY_LIST) {
+  const d = docs.find(x => x.gateway === g);
+  const enabled = d ? d.enabled !== false : GATEWAY_DEFAULT_ENABLED[g];
+  const configured = gatewayConfigured(g);
+  out[g] = { enabled, configured, available: enabled && configured, disabledMessage: (d && d.disabledMessage) || '' };
+ }
+ return out;
+}
 const siteLinksSchema = new mongoose.Schema({
  _id: { type: String, default: 'main' },
  whatsappNumber: { type: String, default: '2349065518402' }, // digits only, no + or spaces — used as wa.me/{number}
@@ -3268,7 +3311,8 @@ flwAxios.interceptors.request.use(config => {
 });
 const virtualAccountDepositSchema = new mongoose.Schema({
  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
- flwRef: { type: String, required: true, unique: true }, // Flutterwave tx reference
+ flwRef: { type: String, required: true, unique: true }, // Flutterwave tx reference (Paystack rows are prefixed PSK-)
+ gateway: { type: String, enum: ['flutterwave', 'paystack'], default: 'flutterwave' },
  flwTxId: { type: String, default: '' },
  amount: { type: Number, required: true },
  creditAmount: { type: Number, required: true },
@@ -3405,11 +3449,182 @@ async function createVirtualAccountForUser(user) {
  await user.save();
  return { message: ' Virtual account created', virtualAccount: user.virtualAccount };
 }
+// ═══ PAYSTACK DEDICATED VIRTUAL ACCOUNTS ════════════════════════════════════
+function isPaystackDvaTx(tx) {
+ return !!tx && [tx.channel, tx.authorization && tx.authorization.channel].some(c => String(c || '').toLowerCase() === 'dedicated_nuban');
+}
+// Who owns the account the money was sent to? Account number first, then Paystack customer code.
+async function findUserForPaystackVa(...sources) {
+ for (const t of sources) {
+  if (!t) continue;
+  const nums = [t.dedicated_account && t.dedicated_account.account_number, t.authorization && t.authorization.receiver_bank_account_number, t.metadata && t.metadata.receiver_account_number]
+   .filter(Boolean).map(String);
+  for (const n of nums) {
+   const u = await User.findOne({ 'paystackVirtualAccount.accountNumber': n });
+   if (u) return u;
+  }
+ }
+ for (const t of sources) {
+  const code = t && t.customer && t.customer.customer_code;
+  if (code) {
+   const u = await User.findOne({ 'paystackVirtualAccount.customerCode': code });
+   if (u) return u;
+  }
+ }
+ return null;
+}
+async function createPaystackVirtualAccountForUser(user) {
+ const vaCountry = String(user.country || 'NG').toUpperCase();
+ if (vaCountry !== 'NG') {
+  const err = new Error('Virtual accounts are available to customers in Nigeria only. Use the payment link — it is priced in US dollars for your country.');
+  err.status = 403;
+  throw err;
+ }
+ if (!process.env.PAYSTACK_SECRET_KEY) throw new Error('PAYSTACK_SECRET_KEY is not set');
+ if (user.paystackVirtualAccount?.accountNumber) {
+  user.paystackVirtualAccount.enabled = true;
+  await user.save();
+  return { message: 'Virtual account re-enabled', virtualAccount: user.paystackVirtualAccount };
+ }
+ const email = String(user.email || '').trim().toLowerCase();
+ const nameParts = String(user.name || '').trim().split(/\s+/);
+ const first_name = nameParts[0] || 'KLS';
+ const last_name = nameParts.slice(1).join(' ') || 'User';
+ const phone = user.contactPhone || undefined;
+ // 1. Paystack customer — reuse it if this e-mail already has one.
+ let customer = null;
+ try { customer = (await paystackAxios.get(`/customer/${encodeURIComponent(email)}`)).data?.data || null; }
+ catch (e) { if (e.response?.status !== 404) throw e; }
+ if (!customer) customer = (await paystackAxios.post('/customer', { email, first_name, last_name, phone })).data?.data || null;
+ if (!customer?.customer_code) throw new Error('Paystack did not return a customer');
+ // 2. Dedicated account — reuse it if this customer already has one.
+ let da = customer.dedicated_account && customer.dedicated_account.account_number ? customer.dedicated_account : null;
+ if (!da) {
+  const r = await paystackAxios.post('/dedicated_account', {
+   customer: customer.customer_code,
+   preferred_bank: process.env.PAYSTACK_DVA_BANK || 'wema-bank',
+   first_name, last_name, phone
+  }, { timeout: 25000 });
+  da = r.data?.data || null;
+ }
+ const accountNumber = (da && da.account_number) || '';
+ user.paystackVirtualAccount = {
+  enabled: !!accountNumber,
+  accountNumber,
+  bankName: (da && da.bank && da.bank.name) || '',
+  accountName: (da && da.account_name) || '',
+  customerCode: customer.customer_code,
+  customerId: String(customer.id || ''),
+  dedicatedAccountId: String((da && da.id) || ''),
+  createdAt: new Date()
+ };
+ await user.save();
+ if (!accountNumber) return { message: 'Your account is being set up — it will appear here in a moment.', pending: true, virtualAccount: user.paystackVirtualAccount };
+ return { message: ' Virtual account created', virtualAccount: user.paystackVirtualAccount };
+}
+// Paystack tells us (webhook) when an account that was still being assigned is ready.
+async function applyPaystackDvaAssigned(data) {
+ const code = data?.customer?.customer_code;
+ const da = data?.dedicated_account || {};
+ if (!code || !da.account_number) return false;
+ let user = await User.findOne({ 'paystackVirtualAccount.customerCode': code });
+ if (!user && data.customer.email) user = await User.findOne({ email: String(data.customer.email).trim().toLowerCase() });
+ if (!user) return false;
+ await User.updateOne({ _id: user._id }, { $set: {
+  'paystackVirtualAccount.enabled': true,
+  'paystackVirtualAccount.accountNumber': String(da.account_number),
+  'paystackVirtualAccount.bankName': (da.bank && da.bank.name) || '',
+  'paystackVirtualAccount.accountName': da.account_name || '',
+  'paystackVirtualAccount.customerCode': code,
+  'paystackVirtualAccount.dedicatedAccountId': String(da.id || ''),
+  'paystackVirtualAccount.createdAt': user.paystackVirtualAccount?.createdAt || new Date()
+ } });
+ return true;
+}
+// Credits one Paystack virtual-account transfer to the wallet. `tx` MUST come straight from Paystack's
+// API (verify or list) — callers never pass an unverified webhook body. Safe to call repeatedly:
+// the unique wallet-transaction reference means money can only ever move once.
+async function handlePaystackVaCredit(user, tx) {
+ if (!tx || !tx.reference) return { status: 'skipped' };
+ const key = 'PSK-' + String(tx.reference);
+ if (String(tx.status || '').toLowerCase() !== 'success' || String(tx.currency || '').toUpperCase() !== 'NGN') return { status: 'rejected' };
+ const receivedAmount = Number(tx.amount || 0) / 100; // kobo → naira
+ if (receivedAmount <= 0) return { status: 'skipped' };
+ const fee = calcDepositFee(receivedAmount);
+ const creditAmount = receivedAmount - fee;
+ if (creditAmount <= 0) return { status: 'skipped' };
+ const acct = user.paystackVirtualAccount?.accountNumber || '';
+ let claim;
+ try {
+  claim = await VirtualAccountDeposit.findOneAndUpdate(
+   { flwRef: key },
+   { $setOnInsert: { userId: user._id, flwRef: key, flwTxId: String(tx.id || ''), gateway: 'paystack', amount: receivedAmount, creditAmount, accountNumber: acct, status: 'pending', rawPayload: tx, createdAt: new Date() } },
+   { upsert: true, new: true }
+  );
+ } catch (e) {
+  if (e && e.code === 11000) claim = await VirtualAccountDeposit.findOne({ flwRef: key });
+  else throw e;
+ }
+ if (!claim) return { status: 'skipped' };
+ if (claim.status === 'success') return { status: 'duplicate' };
+ try {
+  await Transaction.create({
+   userId: user._id, type: 'deposit', amount: creditAmount, txRef: key,
+   description: `VA deposit — ₦${creditAmount.toLocaleString('en-NG')} credited (₦${receivedAmount.toLocaleString('en-NG')} received, ₦${fee} fee) via ${user.paystackVirtualAccount?.bankName || 'Paystack bank transfer'}`,
+   status: 'success'
+  });
+ } catch (e) {
+  if (e && e.code === 11000) {
+   await VirtualAccountDeposit.updateOne({ _id: claim._id }, { $set: { status: 'success' } }).catch(() => {});
+   return { status: 'duplicate' };
+  }
+  throw e;
+ }
+ const updated = await User.findByIdAndUpdate(user._id, { $inc: { balance: creditAmount } }, { new: true }).select('balance');
+ await VirtualAccountDeposit.updateOne({ _id: claim._id }, { $set: { status: 'success' } });
+ if (updated) {
+  pushBalanceToUser(user._id, updated.balance, creditAmount);
+  const msg = `event: va_deposit\ndata: ${JSON.stringify({ creditAmount, receivedAmount, fee, balance: updated.balance, bank: user.paystackVirtualAccount?.bankName || 'bank transfer', flwRef: key, ts: Date.now() })}\n\n`;
+  const clients = sseClients.get(String(user._id));
+  if (clients && clients.size) { for (const r of clients) { try { r.write(msg); } catch { clients.delete(r); } } }
+ }
+ console.log(` KLS Paystack VA credited: ₦${creditAmount} to ${user.email} (received ₦${receivedAmount}, fee ₦${fee}) | key:${key}`);
+ return { status: 'credited', creditAmount };
+}
+// Safety net for a missed webhook: look at the last 24h of successful Paystack charges.
+let _psVaReconcileRunning = false;
+async function reconcilePaystackVADeposits() {
+ if (_psVaReconcileRunning || !process.env.PAYSTACK_SECRET_KEY) return;
+ _psVaReconcileRunning = true;
+ try {
+  if (!(await User.exists({ 'paystackVirtualAccount.accountNumber': { $exists: true, $ne: '' } }))) return;
+  const from = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  for (let page = 1; page <= 3; page++) {
+   const r = await paystackAxios.get('/transaction', { params: { status: 'success', perPage: 100, page, from }, timeout: 15000 });
+   const list = r.data?.data || [];
+   if (!list.length) break;
+   for (const tx of list) {
+    if (!isPaystackDvaTx(tx) || !tx.reference) continue;
+    try {
+     if (await VirtualAccountDeposit.findOne({ flwRef: 'PSK-' + tx.reference, status: 'success' }).select('_id')) continue;
+     const user = await findUserForPaystackVa(tx);
+     if (user) await handlePaystackVaCredit(user, tx);
+    } catch (e) { console.warn('[PS-VA-reconcile] credit error:', e.message); }
+   }
+   if (list.length < 100) break;
+  }
+ } catch (e) {
+  console.warn('[PS-VA-reconcile] error:', e.response?.data?.message || e.message);
+ } finally { _psVaReconcileRunning = false; }
+}
 app.get('/api/user/virtual-account', auth, async (req, res) => {
  try {
- const user = await User.findById(req.user._id).select('virtualAccount name balance country contactPhone');
+ const user = await User.findById(req.user._id).select('virtualAccount paystackVirtualAccount name balance country contactPhone');
  const settings = await getVASettings();
- const va = user.virtualAccount || {};
+ const vaGw = req.query.gateway === 'paystack' ? 'paystack' : 'flutterwave';
+ const vaStates = await getGatewayStates();
+ const va = (vaGw === 'paystack' ? user.paystackVirtualAccount : user.virtualAccount) || {};
+ const gwOn = vaGw === 'paystack' ? vaStates.paystack.available : vaStates.flutterwave.enabled;
  // Nigeria-only rail. The country comes from the profile first and from the
  // caller's IP when the profile has none, so accounts created before the
  // country field existed are handled correctly too. Any non-Nigerian user —
@@ -3437,7 +3652,9 @@ app.get('/api/user/virtual-account', auth, async (req, res) => {
  userName: user.name || '',
  balance: user.balance || 0,
  createdAt: va.createdAt || null,
- globalEnabled: settings.globalEnabled
+ globalEnabled: settings.globalEnabled && gwOn,
+ gateway: vaGw,
+ pending: !!(va.customerCode && !va.accountNumber)
  });
  } catch (e) {
  // A failure here must never be mistaken for "maintenance". Report the error
@@ -3450,6 +3667,9 @@ app.post('/api/user/virtual-account/create', auth, async (req, res) => {
  try {
  const settings = await getVASettings();
  if (!settings.globalEnabled) return res.status(503).json({ error: 'Virtual accounts are temporarily disabled — please try again later or use another deposit method.' });
+ const vaGw = String(req.body?.gateway || 'flutterwave').toLowerCase() === 'paystack' ? 'paystack' : 'flutterwave';
+ const vaStates = await getGatewayStates();
+ if (vaGw === 'paystack' ? !vaStates.paystack.available : !vaStates.flutterwave.enabled) return res.status(503).json({ error: (vaStates[vaGw].disabledMessage) || 'Bank transfer is temporarily unavailable — please use the payment link instead.' });
  const user = await User.findById(req.user._id);
  if (!user) return res.status(404).json({ error: 'User not found' });
  if (!user.contactPhone) {
@@ -3463,7 +3683,7 @@ app.post('/api/user/virtual-account/create', auth, async (req, res) => {
  methods: ['paymentlink'],
  });
  }
- const result = await createVirtualAccountForUser(user);
+ const result = (String(req.body?.gateway || '').toLowerCase() === 'paystack') ? await createPaystackVirtualAccountForUser(user) : await createVirtualAccountForUser(user);
  res.json(result);
  } catch (e) {
  const msg = e.response?.data?.message || e.message;
@@ -3475,7 +3695,7 @@ app.post('/api/admin/virtual-accounts/create/:userId', adminAuth, async (req, re
  try {
  const user = await User.findById(req.params.userId);
  if (!user) return res.status(404).json({ error: 'User not found' });
- const result = await createVirtualAccountForUser(user);
+ const result = (String(req.body?.gateway || '').toLowerCase() === 'paystack') ? await createPaystackVirtualAccountForUser(user) : await createVirtualAccountForUser(user);
  res.json(result);
  } catch (e) {
  const msg = e.response?.data?.message || e.message;
@@ -3522,6 +3742,8 @@ const paymentLinkDepositSchema = new mongoose.Schema({
  fee: { type: Number, default: 0 },
  status: { type: String, enum: ['pending', 'success', 'failed'], default: 'pending' },
  flwTransactionId: { type: String, default: '' },
+ gateway: { type: String, enum: ['flutterwave', 'paystack'], default: 'flutterwave' }, // which provider took this payment (old rows = flutterwave)
+ gatewayTxId: { type: String, default: '' }, // Paystack's own transaction id
  rawPayload: { type: mongoose.Schema.Types.Mixed },
  creditedAt: { type: Date },
  // Reversal tracking — prevents double-deduction if a failed deposit webhook fires twice
@@ -3542,10 +3764,46 @@ function calcDepositFee(creditAmount) {
 function calcChargeAmount(creditAmount) {
  return creditAmount + calcDepositFee(creditAmount);
 }
-app.post('/api/deposit/paymentlink/create', auth, async (req, res) => {
+// ═══ PAYSTACK HELPERS ═══════════════════════════════════════════════════════
+const paystackAxios = axios.create({ baseURL: 'https://api.paystack.co', timeout: 15000 });
+paystackAxios.interceptors.request.use(config => {
+ config.headers = { ...config.headers, Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` };
+ return config;
+});
+// Paystack can only settle currencies that are switched on for the merchant account.
+// NGN always works. USD must be enabled in the Paystack dashboard AND PAYSTACK_ALLOW_USD=true set here.
+function paystackSupportsCurrency(cur) {
+ const c = String(cur || '').toUpperCase();
+ return c === 'NGN' || (c === 'USD' && String(process.env.PAYSTACK_ALLOW_USD || '').toLowerCase() === 'true');
+}
+// Returns Paystack's transaction object, or null when the reference does not exist (yet).
+async function paystackVerify(reference) {
  try {
- if (!process.env.FLW_V3_SECRET_KEY) {
- return res.status(503).json({ error: 'Payments are not configured yet — contact support.' });
+  const r = await paystackAxios.get(`/transaction/verify/${encodeURIComponent(reference)}`, { timeout: 15000 });
+  return r.data?.data || null;
+ } catch (e) {
+  const msg = String(e.response?.data?.message || '');
+  if (e.response?.status === 404 || /not found/i.test(msg)) return null;
+  throw e;
+ }
+}
+// Paystack amounts are in the currency's subunit (kobo / cents). Never credit less than was asked for.
+function paystackTxOk(tx, deposit) {
+ if (!tx) return false;
+ return String(tx.status || '').toLowerCase() === 'success'
+  && String(tx.currency || '').toUpperCase() === String(deposit.currency || 'NGN').toUpperCase()
+  && Number(tx.amount) >= Math.round(Number(deposit.amount) * 100)
+  && String(tx.reference || '') === String(deposit.txRef);
+}
+app.post('/api/deposit/paymentlink/create', auth, async (req, res) => {
+ let gateway = '';
+ try {
+ const gwStates = await getGatewayStates();
+ if (!gwStates.flutterwave.configured && !gwStates.paystack.configured) {
+  return res.status(503).json({ error: 'Payments are not configured yet — contact support.' });
+ }
+ if (!gwStates.flutterwave.available && !gwStates.paystack.available) {
+  return res.status(503).json({ error: gwStates.flutterwave.disabledMessage || gwStates.paystack.disabledMessage || 'Deposits are temporarily unavailable — please try again later.' });
  }
  const methodSetting = await PaymentMethodSetting.findOne({ method: 'paymentlink' });
  if (methodSetting && methodSetting.enabled === false) {
@@ -3586,39 +3844,71 @@ app.post('/api/deposit/paymentlink/create', auth, async (req, res) => {
  chargeAmount = parsedAmount + fee;
  chargeCurrency = 'NGN';
  }
- // Only the rails Flutterwave has actually approved for this market are
- // offered — a customer never sees a method that will fail at checkout.
- const paymentOptions = klsFlwMethods.paymentOptionsFor(plGeo.code, chargeCurrency);
- const txRef = `${BRAND.txPrefix}-PL-${user._id}-${Date.now()}`;
- const siteUrl = process.env.SITE_URL || '';
- const payload = {
- tx_ref: txRef,
- amount: chargeAmount,
- currency: chargeCurrency,
- redirect_url: `${siteUrl}/api/deposit/paymentlink/callback`,
- payment_options: paymentOptions,
- customer: {
- email: user.email, // auto-filled from the logged-in account — never typed by the user
- name: user.name || `KLS Customer`
- },
- customizations: { title: 'KLS Wallet Deposit', description: `Deposit for ${user.name}` }
+ // ── Which gateway takes this payment? ──────────────────────────────────────
+ // The customer's pick wins when it is available; otherwise Flutterwave, then Paystack.
+ const requested = String(req.body.gateway || '').trim().toLowerCase();
+ if (requested && !GATEWAY_LIST.includes(requested)) return res.status(400).json({ error: 'Unknown payment gateway' });
+ const gwOk = {
+  flutterwave: gwStates.flutterwave.available,
+  paystack: gwStates.paystack.available && paystackSupportsCurrency(chargeCurrency)
  };
- const flwRes = await flwAxios.post(`/payments`, payload, {
- headers: { 'Content-Type': 'application/json' },
- timeout: 15000
- });
- const link = flwRes.data?.data?.link;
- if (!link) throw new Error('Flutterwave did not return a payment link');
- await PaymentLinkDeposit.create({ userId: user._id, txRef, amount: chargeAmount, currency: chargeCurrency, creditAmount: creditNgn, fee, status: 'pending' });
- res.json({ link, txRef, currency: chargeCurrency, charged: chargeAmount, creditNgn, country: plGeo.code, paymentOptions });
+ gateway = requested || (gwOk.flutterwave ? 'flutterwave' : (gwOk.paystack ? 'paystack' : ''));
+ if (!gateway || !gwOk[gateway]) {
+  const which = gateway || 'flutterwave';
+  return res.status(503).json({ error: gwStates[which].disabledMessage || `${GATEWAY_LABELS[which]} is currently unavailable for your country or currency — please choose another payment option.` });
+ }
+ let txRef = `${BRAND.txPrefix}-PL-${user._id}-${Date.now()}`;
+ const siteUrl = process.env.SITE_URL || '';
+ let link, paymentOptions = null;
+ if (gateway === 'paystack') {
+  // Paystack references may only contain letters, numbers and - . =
+  txRef = txRef.replace(/[^A-Za-z0-9.=-]/g, '-');
+  const psRes = await paystackAxios.post('/transaction/initialize', {
+   email: user.email, // auto-filled from the logged-in account — never typed by the user
+   amount: Math.round(chargeAmount * 100), // kobo / cents
+   currency: chargeCurrency,
+   reference: txRef,
+   callback_url: `${siteUrl}/api/deposit/paystack/callback`,
+   metadata: {
+    userId: String(user._id), purpose: 'wallet_deposit', creditNgn,
+    cancel_action: `${siteUrl}/deposit?deposit=cancelled`
+   }
+  }, { headers: { 'Content-Type': 'application/json' }, timeout: 15000 });
+  link = psRes.data?.data?.authorization_url;
+  if (!psRes.data?.status || !link) throw new Error(psRes.data?.message || 'Paystack did not return a payment link');
+ } else {
+  // Only the rails Flutterwave has actually approved for this market are
+  // offered — a customer never sees a method that will fail at checkout.
+  paymentOptions = klsFlwMethods.paymentOptionsFor(plGeo.code, chargeCurrency);
+  const payload = {
+   tx_ref: txRef,
+   amount: chargeAmount,
+   currency: chargeCurrency,
+   redirect_url: `${siteUrl}/api/deposit/paymentlink/callback`,
+   payment_options: paymentOptions,
+   customer: {
+    email: user.email, // auto-filled from the logged-in account — never typed by the user
+    name: user.name || `KLS Customer`
+   },
+   customizations: { title: 'KLS Wallet Deposit', description: `Deposit for ${user.name}` }
+  };
+  const flwRes = await flwAxios.post(`/payments`, payload, {
+   headers: { 'Content-Type': 'application/json' },
+   timeout: 15000
+  });
+  link = flwRes.data?.data?.link;
+  if (!link) throw new Error('Flutterwave did not return a payment link');
+ }
+ await PaymentLinkDeposit.create({ userId: user._id, txRef, amount: chargeAmount, currency: chargeCurrency, creditAmount: creditNgn, fee, status: 'pending', gateway });
+ res.json({ link, txRef, gateway, currency: chargeCurrency, charged: chargeAmount, creditNgn, country: plGeo.code, paymentOptions });
  } catch (e) {
  console.error('Payment link create error:', JSON.stringify(e.response?.data || e.message, null, 2));
  try {
  await SystemError.create({
- source: 'flutterwave',
+ source: gateway || 'flutterwave',
  message: 'Failed to create payment link for deposit',
  detail: JSON.stringify(e.response?.data || e.message),
- context: { userId: req.user?._id, attemptedAmount: req.body?.amount }
+ context: { userId: req.user?._id, attemptedAmount: req.body?.amount, gateway }
  });
  } catch {}
  res.status(502).json({
@@ -3670,10 +3960,120 @@ app.get('/api/deposit/paymentlink/callback', async (req, res) => {
  res.redirect(failRedirect);
  }
 });
+// ── Paystack: browser comes back here after paying ───────────────────────────
+app.get('/api/deposit/paystack/callback', async (req, res) => {
+ const siteUrl = process.env.SITE_URL || '';
+ const failRedirect = `${siteUrl}/deposit?deposit=failed`;
+ const pendingRedirect = (ref) => `${siteUrl}/deposit?deposit=pending&txRef=${encodeURIComponent(ref)}`;
+ try {
+  const reference = String(req.query.reference || req.query.trxref || '');
+  if (!reference) return res.redirect(failRedirect);
+  const deposit = await PaymentLinkDeposit.findOne({ txRef: reference, gateway: 'paystack' });
+  if (!deposit) return res.redirect(failRedirect);
+  if (deposit.status === 'success') return res.redirect(`${siteUrl}/deposit?deposit=success`);
+  if (!process.env.PAYSTACK_SECRET_KEY) return res.redirect(failRedirect);
+  try {
+   const tx = await paystackVerify(reference);
+   if (paystackTxOk(tx, deposit)) {
+    await creditPaymentLinkDeposit(deposit, tx);
+    return res.redirect(`${siteUrl}/deposit?deposit=success`);
+   }
+   const st = String(tx?.status || '').toLowerCase();
+   if (st === 'failed' || st === 'reversed') {
+    await PaymentLinkDeposit.updateOne({ _id: deposit._id, status: 'pending' }, { $set: { status: 'failed', rawPayload: tx } });
+    return res.redirect(failRedirect);
+   }
+   if (st === 'abandoned') return res.redirect(`${siteUrl}/deposit?deposit=cancelled`);
+   return res.redirect(pendingRedirect(reference));
+  } catch (e) {
+   console.error('Paystack callback verify error:', e.response?.data || e.message);
+   return res.redirect(pendingRedirect(reference));
+  }
+ } catch (e) {
+  console.error('Paystack callback error:', e.message);
+  res.redirect(failRedirect);
+ }
+});
+// ── Paystack webhook (set https://YOUR-SITE/api/webhooks/paystack in the Paystack dashboard) ──
+// Always processed — even when the Paystack switch is OFF — because the customer has already paid.
+app.post('/api/webhooks/paystack', async (req, res) => {
+ const secret = process.env.PAYSTACK_SECRET_KEY || '';
+ const received = String(req.headers['x-paystack-signature'] || '');
+ const event = req.body || {};
+ const data = event.data || {};
+ const reference = String(data.reference || '');
+ const log = async (status, message) => {
+  try {
+   if (klsPlatform) await klsPlatform.logWebhook({
+    provider: 'paystack', channel: 'paymentlink', event: event.event || 'unknown', reference,
+    txId: data.id, amount: Number(data.amount || 0) / 100, currency: data.currency, status, message, payload: event
+   });
+  } catch { /* logging never breaks a credit */ }
+ };
+ if (!secret || !req.rawBody) {
+  await log('signature_rejected', !secret ? 'PAYSTACK_SECRET_KEY is not set' : 'raw body unavailable');
+  return res.status(401).json({ error: 'Webhook not configured' });
+ }
+ const expected = crypto.createHmac('sha512', secret).update(req.rawBody).digest('hex');
+ let valid = false;
+ try {
+  const a = Buffer.from(expected, 'utf8'), b = Buffer.from(received, 'utf8');
+  valid = a.length === b.length && crypto.timingSafeEqual(a, b);
+ } catch { valid = false; }
+ if (!valid) {
+  console.error('Paystack webhook REJECTED: bad x-paystack-signature');
+  await log('signature_rejected', 'x-paystack-signature mismatch');
+  return res.status(401).json({ error: 'Invalid webhook signature' });
+ }
+ try {
+  if (event.event === 'dedicatedaccount.assign.success') {
+   const ok = await applyPaystackDvaAssigned(data);
+   await log(ok ? 'processed' : 'ignored', ok ? 'virtual account assigned' : 'no matching customer for assigned account');
+   return res.json({ received: true });
+  }
+  if (event.event === 'dedicatedaccount.assign.failed') {
+   await log('failed', 'Paystack could not assign a dedicated account');
+   return res.json({ received: true });
+  }
+  if (event.event !== 'charge.success') {
+   await log('ignored', `event ${event.event || 'unknown'} is not handled`);
+   return res.json({ received: true });
+  }
+  const deposit = reference ? await PaymentLinkDeposit.findOne({ txRef: reference, gateway: 'paystack' }) : null;
+  if (!deposit && isPaystackDvaTx(data)) {
+   // A bank transfer into a customer's dedicated virtual account.
+   const vtx = await paystackVerify(reference);
+   if (!vtx || String(vtx.status || '').toLowerCase() !== 'success') {
+    await log('failed', `virtual account verification failed: status=${vtx?.status || 'not found'}`);
+    return res.json({ received: true });
+   }
+   const owner = await findUserForPaystackVa(vtx, data);
+   if (!owner) { await log('failed', 'virtual account transfer matches no user'); return res.json({ received: true }); }
+   const out = await handlePaystackVaCredit(owner, vtx);
+   await log(out.status === 'credited' ? 'processed' : 'ignored', `virtual account ${out.status}${out.creditAmount ? ' ₦' + out.creditAmount : ''}`);
+   return res.json({ received: true });
+  }
+  if (!deposit) { await log('ignored', 'no wallet deposit matches this reference'); return res.json({ received: true }); }
+  if (deposit.status === 'success') { await log('ignored', 'already credited'); return res.json({ received: true }); }
+  // Never trust the webhook body alone — confirm with Paystack's API before crediting.
+  const tx = await paystackVerify(reference);
+  if (!paystackTxOk(tx, deposit)) {
+   await log('failed', `verification failed: status=${tx?.status || 'not found'} amount=${tx?.amount} currency=${tx?.currency}`);
+   return res.json({ received: true });
+  }
+  await creditPaymentLinkDeposit(deposit, tx);
+  await log('processed', `credited ₦${deposit.creditAmount} for ${reference}`);
+  return res.json({ received: true });
+ } catch (e) {
+  console.error('Paystack webhook error:', e.response?.data || e.message);
+  await log('failed', e.message);
+  return res.status(500).json({ error: 'Processing error' }); // non-2xx → Paystack retries
+ }
+});
 async function creditPaymentLinkDeposit(deposit, tx) {
   const fresh = await PaymentLinkDeposit.findOneAndUpdate(
     { _id: deposit._id, status: 'pending' },
-    { status: 'success', flwTransactionId: String(tx.id || ''), creditedAt: new Date(), rawPayload: tx },
+    { status: 'success', ...(deposit.gateway === 'paystack' ? { gatewayTxId: String(tx.id || '') } : { flwTransactionId: String(tx.id || '') }), creditedAt: new Date(), rawPayload: tx },
     { new: true }
   );
   if (!fresh) return; // Already credited or failed — never double-credit
@@ -3688,7 +4088,7 @@ async function creditPaymentLinkDeposit(deposit, tx) {
   await Transaction.create({
     userId: updated._id, type: 'deposit', amount: creditAmount,
     txRef: deposit.txRef,
-    description: `Deposit via Flutterwave payment link (${tx.payment_type || 'unknown method'})`,
+    description: deposit.gateway === 'paystack' ? `Deposit via Paystack (${tx.channel || 'unknown method'})` : `Deposit via Flutterwave payment link (${tx.payment_type || 'unknown method'})`,
     status: 'success'
   });
   pushBalanceToUser(updated._id, updated.balance, creditAmount);
@@ -3756,6 +4156,25 @@ app.get('/api/deposit/paymentlink/status/:txRef', auth, async (req, res) => {
  const deposit = await PaymentLinkDeposit.findOne({ txRef: req.params.txRef, userId: req.user._id });
  if (!deposit) return res.status(404).json({ error: 'Deposit not found' });
  if (deposit.status !== 'pending') return res.json({ status: deposit.status, creditAmount: deposit.creditAmount });
+ if (deposit.gateway === 'paystack') {
+ if (process.env.PAYSTACK_SECRET_KEY) {
+ try {
+ const tx = await paystackVerify(deposit.txRef);
+ if (paystackTxOk(tx, deposit)) {
+ await creditPaymentLinkDeposit(deposit, tx);
+ return res.json({ status: 'success', creditAmount: deposit.creditAmount });
+ }
+ const st = String(tx?.status || '').toLowerCase();
+ if (st === 'failed' || st === 'reversed') {
+ await PaymentLinkDeposit.updateOne({ _id: deposit._id, status: 'pending' }, { $set: { status: 'failed', rawPayload: tx } });
+ return res.json({ status: 'failed' });
+ }
+ } catch (pollErr) {
+ console.error('Paystack status poll error:', pollErr.response?.data || pollErr.message);
+ }
+ }
+ return res.json({ status: 'pending' });
+ }
  if (process.env.FLW_V3_SECRET_KEY) {
  try {
  const verify = await flwAxios.get(`/transactions/verify_by_reference`, {
@@ -3822,6 +4241,7 @@ async function getOrCreateFlwCustomer(user) {
 }
 app.post('/api/deposit/banktransfer/create', auth, async (req, res) => {
  try {
+ if (!(await getGatewayStates()).flutterwave.enabled) return res.status(503).json({ error: 'Bank transfer is temporarily unavailable — please use the payment link instead.' });
  if (!process.env.FLW_CLIENT_ID || !process.env.FLW_CLIENT_SECRET) {
  return res.status(503).json({ error: 'Bank transfer deposits are not configured yet — contact support.' });
  }
@@ -3968,7 +4388,7 @@ app.get('/api/deposit/banktransfer/status/:reference', auth, async (req, res) =>
 });
 app.get('/api/user/virtual-account/latest-deposit', auth, async (req, res) => {
  try {
- const user = await User.findById(req.user._id).select('balance virtualAccount email');
+ const user = await User.findById(req.user._id).select('balance virtualAccount paystackVirtualAccount email');
  if (!user) return res.status(404).json({ error: 'User not found' });
  const latest = await VirtualAccountDeposit.findOne({ userId: user._id })
  .sort({ createdAt: -1 })
@@ -4012,13 +4432,30 @@ app.get('/api/user/virtual-account/latest-deposit', auth, async (req, res) => {
  }
  }
  }
+ if (!reconCredit && user.paystackVirtualAccount?.enabled && user.paystackVirtualAccount?.customerId && process.env.PAYSTACK_SECRET_KEY) {
+ const psKey = 'ps:' + String(user._id);
+ if (Date.now() - (_vaReconCache.get(psKey) || 0) > 30000) { // throttle: at most every 30s
+ _vaReconCache.set(psKey, Date.now());
+ try {
+ const psRes = await paystackAxios.get('/transaction', {
+ params: { customer: user.paystackVirtualAccount.customerId, status: 'success', perPage: 20, from: new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString() },
+ timeout: 10000
+ });
+ for (const ptx of (psRes.data?.data || [])) {
+ if (!isPaystackDvaTx(ptx)) continue;
+ const out = await handlePaystackVaCredit(user, ptx).catch(err => { console.warn('[PS-VA-poll-reconcile] credit error:', err.message); return null; });
+ if (out?.status === 'credited') { reconCredit = { flwRef: 'PSK-' + ptx.reference, amount: Number(ptx.amount) / 100 }; break; }
+ }
+ } catch (psErr) { console.warn('[PS-VA-poll-reconcile] error:', psErr.response?.data?.message || psErr.message); }
+ }
+ }
  const latestFinal = reconCredit
  ? await VirtualAccountDeposit.findOne({ userId: user._id }).sort({ createdAt: -1 }).select('status amount creditAmount createdAt flwRef')
  : latest;
  const freshUser = reconCredit ? await User.findById(user._id).select('balance') : user;
  res.json({
  balance: freshUser.balance || 0,
- vaEnabled: vaEnabled || false,
+ vaEnabled: !!(vaEnabled || (user.paystackVirtualAccount?.enabled && user.paystackVirtualAccount?.accountNumber)),
  reconCredit, // non-null if we just credited something in this poll
  latestDeposit: latestFinal ? {
  status: latestFinal.status,
@@ -7310,6 +7747,22 @@ app.get('/api/deposit/payment-methods', optionalAuth, async (req, res) => {
  byMethod.payCurrency = klsCountries.payCurrencyFor(geo.code);
  byMethod.methods = isNg ? ['virtualaccount', 'paymentlink'] : ['paymentlink'];
  byMethod.checkoutMethods = klsFlwMethods.describeFor(geo.code);
+ // Gateways the customer can choose between for the payment link.
+ const gw = await getGatewayStates();
+ const payCur = klsCountries.payCurrencyFor(geo.code);
+ byMethod.gateways = {
+  flutterwave: { enabled: gw.flutterwave.enabled, available: gw.flutterwave.available, disabledMessage: gw.flutterwave.disabledMessage },
+  paystack: { enabled: gw.paystack.enabled, available: gw.paystack.available && paystackSupportsCurrency(payCur), disabledMessage: gw.paystack.disabledMessage }
+ };
+ byMethod.defaultGateway = byMethod.gateways.flutterwave.available ? 'flutterwave' : (byMethod.gateways.paystack.available ? 'paystack' : '');
+ // Virtual accounts can be issued by Flutterwave or Paystack — a gateway that is switched off stops issuing them.
+ byMethod.vaGateways = { flutterwave: gw.flutterwave.enabled, paystack: gw.paystack.available };
+ if (!byMethod.vaGateways.flutterwave && !byMethod.vaGateways.paystack) {
+  byMethod.virtualaccount = { enabled: false, disabledMessage: gw.flutterwave.disabledMessage || gw.paystack.disabledMessage || 'Bank transfer is temporarily unavailable. Please use Payment Link instead.' };
+ }
+ if (!gw.flutterwave.enabled) {
+  byMethod.banktransfer = { enabled: false, disabledMessage: gw.flutterwave.disabledMessage || 'Bank transfer is temporarily unavailable. Please use Payment Link instead.' };
+ }
  res.json(byMethod);
  } catch (e) { res.status(500).json({ error: 'Failed to load payment method settings' }); }
 });
@@ -7412,6 +7865,36 @@ app.post('/api/admin/payment-methods/:method', adminAuth, async (req, res) => {
  const doc = await PaymentMethodSetting.findOneAndUpdate({ method }, update, { upsert: true, new: true });
  res.json(doc);
  } catch (e) { res.status(500).json({ error: 'Failed to update payment method: ' + e.message }); }
+});
+app.get('/api/admin/payment-gateways', anyAdminAuth, async (req, res) => {
+ try {
+  const states = await getGatewayStates();
+  const site = (process.env.SITE_URL || '').replace(/\/$/, '');
+  res.json({
+   ...states,
+   paystackUsdEnabled: String(process.env.PAYSTACK_ALLOW_USD || '').toLowerCase() === 'true',
+   webhookUrls: { flutterwave: `${site}/api/webhooks/flutterwave`, paystack: `${site}/api/webhooks/paystack` }
+  });
+ } catch (e) { res.status(500).json({ error: 'Failed to load payment gateways' }); }
+});
+app.post('/api/admin/payment-gateways/:gateway', adminAuth, async (req, res) => {
+ try {
+  const { gateway } = req.params;
+  if (!GATEWAY_LIST.includes(gateway)) return res.status(400).json({ error: 'Invalid gateway' });
+  const { enabled, disabledMessage } = req.body;
+  const update = { gateway, updatedAt: new Date() };
+  if (enabled !== undefined) {
+   if (enabled && !gatewayConfigured(gateway)) {
+    const keyName = gateway === 'paystack' ? 'PAYSTACK_SECRET_KEY' : 'FLW_V3_SECRET_KEY';
+    return res.status(400).json({ error: `${GATEWAY_LABELS[gateway]} cannot be switched on yet — ${keyName} is not set on the server.` });
+   }
+   update.enabled = !!enabled;
+  }
+  if (disabledMessage !== undefined) update.disabledMessage = String(disabledMessage).slice(0, 300);
+  await GatewaySetting.findOneAndUpdate({ gateway }, update, { upsert: true, new: true });
+  console.log(`[admin] payment gateway ${gateway} updated:`, JSON.stringify(update));
+  res.json({ ok: true, gateways: await getGatewayStates() });
+ } catch (e) { res.status(500).json({ error: 'Failed to update payment gateway: ' + e.message }); }
 });
 app.get('/api/admin/giveaways', adminAuth, async (req, res) => {
  res.json(await Giveaway.find().sort({ createdAt: -1 }));
@@ -7614,7 +8097,7 @@ function pushBalanceToUser(userId, newBalance, creditAmount = null) {
 // against Flutterwave so users do NOT stay stuck in pending and do NOT require admin manual acceptance.
 // Also marks failed/cancelled/refunded payments so they never credit the user balance.
 let _pendingCheckRunning = false;
-async function checkAllPendingDeposits() {
+async function checkAllPendingFlutterwaveDeposits() {
   if (_pendingCheckRunning) return;
   _pendingCheckRunning = true;
   try {
@@ -7624,6 +8107,7 @@ async function checkAllPendingDeposits() {
     // 1. Check all pending PaymentLinkDeposit records
     const pendingPLs = await PaymentLinkDeposit.find({
       status: 'pending',
+      gateway: { $ne: 'paystack' },
       createdAt: { $gte: since48h }
     }).limit(60);
 
@@ -7790,10 +8274,46 @@ async function reconcileVADeposits() {
  _vaReconcileRunning = false;
  }
 }
+// Paystack pending deposits: verify each one with Paystack and credit / fail it — independent of
+// Flutterwave's keys, so a Paystack-only setup still self-heals when a webhook is missed.
+let _pendingPsCheckRunning = false;
+async function checkPendingPaystackDeposits() {
+  if (_pendingPsCheckRunning || !process.env.PAYSTACK_SECRET_KEY) return;
+  _pendingPsCheckRunning = true;
+  try {
+    const since48h = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    const pending = await PaymentLinkDeposit.find({ status: 'pending', gateway: 'paystack', createdAt: { $gte: since48h } }).limit(60);
+    for (const dep of pending) {
+      try {
+        const tx = await paystackVerify(dep.txRef);
+        if (paystackTxOk(tx, dep)) {
+          console.log(`[Auto-Reconcile] Pending Paystack deposit ${dep.txRef} succeeded! Crediting user...`);
+          await creditPaymentLinkDeposit(dep, tx);
+        } else if (tx && ['failed', 'reversed'].includes(String(tx.status || '').toLowerCase())) {
+          await PaymentLinkDeposit.updateOne({ _id: dep._id, status: 'pending' }, { $set: { status: 'failed', rawPayload: tx } });
+        } else if (Date.now() - new Date(dep.createdAt).getTime() > 24 * 60 * 60 * 1000 && (!tx || String(tx.status || '').toLowerCase() === 'abandoned')) {
+          await PaymentLinkDeposit.updateOne({ _id: dep._id, status: 'pending' }, { $set: { status: 'failed' } });
+        }
+      } catch (err) {
+        console.warn(`[Auto-Reconcile] Paystack check failed for ${dep.txRef}:`, err.response?.data?.message || err.message);
+      }
+    }
+  } catch (e) {
+    console.error('[Auto-Reconcile] checkPendingPaystackDeposits error:', e.message);
+  } finally {
+    _pendingPsCheckRunning = false;
+  }
+}
+async function checkAllPendingDeposits() {
+  await checkAllPendingFlutterwaveDeposits();
+  await checkPendingPaystackDeposits();
+}
 setTimeout(() => {
   reconcileVADeposits();
   checkAllPendingDeposits();
   setInterval(reconcileVADeposits, 60 * 1000);
+  reconcilePaystackVADeposits();
+  setInterval(reconcilePaystackVADeposits, 2 * 60 * 1000);
   setInterval(checkAllPendingDeposits, 30 * 1000);
   setInterval(retryFailedNovaCancellations, 5 * 60 * 1000);
 }, 5000);
@@ -7869,6 +8389,13 @@ async function retryDepositConfirmation(source, id) {
     const dep = await PaymentLinkDeposit.findById(id);
     if (!dep) return { ok: false, message: 'Deposit not found' };
     if (dep.status === 'success') return { ok: true, credited: false, reference: dep.txRef, message: 'Already credited' };
+    if (dep.gateway === 'paystack') {
+      const psTx = await paystackVerify(dep.txRef);
+      if (!paystackTxOk(psTx, dep)) return { ok: true, credited: false, reference: dep.txRef, message: `Paystack reports status: ${psTx?.status || 'not found'}` };
+      await creditPaymentLinkDeposit(dep, psTx);
+      const freshPs = await PaymentLinkDeposit.findById(id).lean();
+      return { ok: true, credited: freshPs.status === 'success', creditNgn: dep.creditAmount, reference: dep.txRef, message: 'Confirmation re-run against Paystack' };
+    }
     const verify = await flwAxios.get('/transactions/verify_by_reference', { params: { tx_ref: dep.txRef }, timeout: 15000 });
     const tx = verify.data?.data;
     if (!tx || tx.status !== 'successful') return { ok: true, credited: false, reference: dep.txRef, message: `Flutterwave reports status: ${tx?.status || 'not found'}` };
@@ -7896,6 +8423,15 @@ async function retryDepositConfirmation(source, id) {
     const dep = await VirtualAccountDeposit.findById(id);
     if (!dep) return { ok: false, message: 'Deposit not found' };
     if (dep.status === 'success') return { ok: true, credited: false, reference: dep.flwRef, message: 'Already credited' };
+    if (dep.gateway === 'paystack') {
+      const psOwner = await User.findById(dep.userId);
+      if (!psOwner) return { ok: false, message: 'Owner account no longer exists' };
+      const psVtx = await paystackVerify(String(dep.flwRef).replace(/^PSK-/, ''));
+      if (!psVtx) return { ok: true, credited: false, reference: dep.flwRef, message: 'Paystack has no record of this payment' };
+      await handlePaystackVaCredit(psOwner, psVtx);
+      const psFresh = await VirtualAccountDeposit.findById(id).lean();
+      return { ok: true, credited: psFresh.status === 'success', creditNgn: psFresh.creditAmount, reference: dep.flwRef, message: 'Paystack virtual account credit re-run' };
+    }
     const user = await User.findById(dep.userId);
     if (!user) return { ok: false, message: 'Owner account no longer exists' };
     await handleVaWebhookCredit(user, dep.rawPayload || { flw_ref: dep.flwRef, id: dep.flwTxId, amount: dep.amount, currency: 'NGN', status: 'successful' });
