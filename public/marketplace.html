@@ -47,7 +47,7 @@
   <link rel="stylesheet" href="/css/mobile-fix.css">
 <style>
     /* Marketplace page switcher: distinct from product-category chips. */
-    .mkt-page-switch{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:0 0 20px;padding:5px;background:var(--card2);border:1px solid var(--border2);border-radius:10px}
+    .mkt-page-switch{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0 0 20px;padding:5px;background:var(--card2);border:1px solid var(--border2);border-radius:10px}
     .mkt-page-switch a{display:flex;align-items:center;justify-content:center;min-height:46px;padding:8px;text-align:center;border-radius:7px;color:var(--t2);font-size:14px;font-weight:800;text-decoration:none;line-height:1.25}
     .mkt-page-switch a:hover,.mkt-page-switch a:focus-visible{color:var(--t1);outline:2px solid var(--gold);outline-offset:-2px}
     .mkt-page-switch a[aria-current="page"]{background:var(--gold);color:var(--t1)}
@@ -259,6 +259,7 @@
     <nav class="mkt-page-switch" aria-label="Switch marketplace">
       <a href="/marketplace" aria-current="page">Marketplace</a>
       <a href="/marketplace2">Marketplace Two</a>
+      <a href="/marketplace3">Marketplace Three</a>
     </nav>
 
     <!-- Toolbar: search + category + sort, side by side on desktop -->
@@ -401,5 +402,6 @@
 <script src="/js/dev-credit.js?v=20260910a" defer></script>
 <script src="/js/mobile-features.js" defer></script>
 <script src="/js/vpn-notice.js" defer></script>
+<script src="/welcome-popup.js?v=1" defer></script>
 </body>
 </html>

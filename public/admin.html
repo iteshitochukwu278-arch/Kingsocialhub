@@ -396,6 +396,7 @@ tr:hover td{background:rgba(255,255,255,.035)}
         <div class="sec-title">Marketplace &amp; Server 2 settings</div>
         <div style="display:flex;gap:10px;flex-wrap:wrap">
           <button type="button" class="btn-primary" onclick="switchTab('logs2')">Logs 2 (Marketplace 2) — switches &amp; prices</button>
+          <button type="button" class="btn-primary" onclick="switchTab('logs3')">Logs 3 (Marketplace 3) — switch &amp; prices</button>
           <button type="button" class="btn-primary" onclick="switchTab('numbers2')">Server 2 — low SMS rate pools</button>
         </div>
       </div>
@@ -564,7 +565,7 @@ tr:hover td{background:rgba(255,255,255,.035)}
         <div class="form-row">
           <div class="fg"><label>Marketplace (manual logs)</label>
             <button class="btn-primary" type="button" id="m2Btn1" onclick="m2Toggle('market1Enabled')" style="width:100%">…</button></div>
-          <div class="fg"><label>Marketplace 2 (RakibSocials)</label>
+          <div class="fg"><label>Marketplace 2 (NovaSolution)</label>
             <button class="btn-primary" type="button" id="m2Btn2" onclick="m2Toggle('market2Enabled')" style="width:100%">…</button></div>
         </div>
         <div class="form-row">
@@ -578,10 +579,10 @@ tr:hover td{background:rgba(255,255,255,.035)}
         <div class="info-box" id="m2Balance">Loading supplier balance…</div>
       </div>
       <div class="sec">
-        <div class="sec-title"><svg class="icon i-package" aria-hidden="true"><use href="#i-package"/></svg> Logs 2 — all RakibSocials products</div>
+        <div class="sec-title"><svg class="icon i-package" aria-hidden="true"><use href="#i-package"/></svg> Logs 2 — all NovaSolution products</div>
         <div class="info-box"><svg class="icon i-pin" aria-hidden="true"><use href="#i-pin"/></svg>
           Every product from the API shows here, including new ones. A product is only shown to customers after you set your selling price (0 = hidden).
-          "API cost" is what RakibSocials charges you; profit = your price − API cost.</div>
+          "API cost" is what NovaSolution charges you; profit = your price − API cost.</div>
         <div class="form-row">
           <div class="fg"><input type="text" id="m2Search" placeholder="Search products…" oninput="m2Render()"/></div>
           <div class="fg"><select id="m2Filter" onchange="m2Render()"><option value="">All products</option><option value="priced">Live (priced)</option><option value="unpriced">Not priced yet</option><option value="instock">In stock</option></select></div>
@@ -592,6 +593,102 @@ tr:hover td{background:rgba(255,255,255,.035)}
       <div class="sec">
         <div class="sec-title"><svg class="icon i-bar-chart" aria-hidden="true"><use href="#i-bar-chart"/></svg> Marketplace 2 sales &amp; profit</div>
         <div id="m2Orders">Loading…</div>
+      </div>
+    </div>
+    <div id="tab-logs3" class="tab-panel">
+      <div class="sec">
+        <div class="sec-title"><svg class="icon i-settings" aria-hidden="true"><use href="#i-settings"/></svg> Marketplace 3 switch</div>
+        <div class="info-box"><svg class="icon i-pin" aria-hidden="true"><use href="#i-pin"/></svg>
+          Marketplace 3 is powered by RakibSocials. When it is disabled, customers see a maintenance screen and cannot buy.</div>
+        <div class="form-row">
+          <div class="fg"><label>Marketplace 3 (RakibSocials)</label>
+            <button class="btn-gold" type="button" id="m3Btn" onclick="m3Toggle()" style="width:100%">…</button></div>
+        </div>
+        <div class="form-row">
+          <div class="fg" style="flex:2"><label>Maintenance message</label><input type="text" id="m3Msg"/></div>
+        </div>
+        <div class="form-row">
+          <div class="fg"><label>Email me when supplier balance is below (₦)</label><input type="number" id="m3Low" min="0"/></div>
+          <div class="fg"><label>Alert email</label><input type="email" id="m3Email" placeholder="you@example.com"/></div>
+          <div class="fg"><label>&nbsp;</label><button class="btn-gold" type="button" onclick="m3SaveConfig()" style="width:100%">Save</button></div>
+        </div>
+        <div class="info-box" id="m3Balance">Loading supplier balance…</div>
+      </div>
+      <div class="sec" id="m3AttentionSec" style="display:none;border-color:var(--red)">
+        <div class="sec-title" style="color:var(--red)"><svg class="icon i-alert-triangle" aria-hidden="true"><use href="#i-alert-triangle"/></svg> Needs attention</div>
+        <div class="info-box">These customers have paid but their order did not finish cleanly. Open your RakibSocials order history, then either <b>deliver the keys</b> to the customer or <b>refund</b> them. Nothing here is lost.</div>
+        <div id="m3Attention" style="overflow-x:auto"></div>
+      </div>
+      <div class="sec">
+        <div class="sec-title"><svg class="icon i-package" aria-hidden="true"><use href="#i-package"/></svg> Logs 3 — all RakibSocials products</div>
+        <div class="info-box"><svg class="icon i-pin" aria-hidden="true"><use href="#i-pin"/></svg>
+          Every product from the API shows here, including new ones. A product is only shown to customers after you set your selling price (0 = hidden).
+          "API cost" is what RakibSocials charges you; profit = your price − API cost.</div>
+        <div class="form-row">
+          <div class="fg"><input type="text" id="m3Search" placeholder="Search products…" oninput="m3Render()"/></div>
+          <div class="fg"><select id="m3Filter" onchange="m3Render()"><option value="">All products</option><option value="priced">Live (priced)</option><option value="unpriced">Not priced yet</option><option value="instock">In stock</option></select></div>
+          <div class="fg"><button class="btn-sm" type="button" onclick="m3LoadProducts(true)">Refresh from API</button></div>
+        </div>
+        <div id="m3Products" style="overflow-x:auto">Loading…</div>
+      </div>
+      <div class="sec">
+        <div class="sec-title"><svg class="icon i-bar-chart" aria-hidden="true"><use href="#i-bar-chart"/></svg> Marketplace 3 sales &amp; profit</div>
+        <div id="m3Orders">Loading…</div>
+      </div>
+    </div>
+    <div id="tab-welcomepopup" class="tab-panel">
+      <div class="sec">
+        <div class="sec-title"><svg class="icon i-zap" aria-hidden="true"><use href="#i-zap"/></svg> Welcome Popup Settings</div>
+        <div class="info-box"><svg class="icon i-pin" aria-hidden="true"><use href="#i-pin"/></svg>
+          A popup that invites visitors to join your WhatsApp channel. Changes here apply to customers within about a minute &mdash; no redeploy needed.
+          How often it appears is remembered in each visitor's browser, so &ldquo;first visit only&rdquo; means first visit per browser.</div>
+        <div class="form-row">
+          <div class="fg"><label>Popup status</label>
+            <button class="btn-gold" type="button" id="wpToggle" onclick="wpToggle()" style="width:100%">…</button></div>
+        </div>
+        <div class="form-row">
+          <div class="fg" style="flex:2"><label>WhatsApp Channel URL</label>
+            <input type="url" id="wpUrl" maxlength="300" placeholder="https://whatsapp.com/channel/…" autocomplete="off"/>
+            <div id="wpUrlErr" style="color:var(--red);font-size:12px;margin-top:4px;display:none"></div></div>
+        </div>
+        <div class="form-row"><div class="fg" style="flex:2"><label>Popup heading</label><input type="text" id="wpHeading" maxlength="120"/></div></div>
+        <div class="form-row"><div class="fg" style="flex:2"><label>Welcome subtitle</label><input type="text" id="wpSubtitle" maxlength="160"/></div></div>
+        <div class="form-row"><div class="fg" style="flex:2"><label>Description</label><textarea id="wpDesc" rows="3" maxlength="500"></textarea></div></div>
+        <div class="form-row"><div class="fg" style="flex:2"><label>Additional message</label><textarea id="wpMore" rows="3" maxlength="500"></textarea></div></div>
+        <div class="form-row">
+          <div class="fg"><label>WhatsApp button text</label><input type="text" id="wpWaText" maxlength="60"/></div>
+          <div class="fg"><label>Secondary button text</label><input type="text" id="wpLaterText" maxlength="60"/></div>
+        </div>
+        <div class="form-row">
+          <div class="fg"><label>How often to show it</label>
+            <select id="wpFreq">
+              <option value="first">First visit only</option>
+              <option value="7d">Once every 7 days</option>
+              <option value="15d">Once every 15 days</option>
+              <option value="30d">Once every 30 days</option>
+              <option value="every">Every visit (once per browsing session)</option>
+            </select></div>
+          <div class="fg"><label>Delay before showing</label>
+            <select id="wpDelay">
+              <option value="0">Immediately after the page loads</option>
+              <option value="1000">After 1 second</option>
+              <option value="3000">After 3 seconds</option>
+              <option value="5000">After 5 seconds</option>
+            </select></div>
+        </div>
+        <div class="fg"><label>Where it appears</label>
+          <label style="display:flex;gap:8px;align-items:center;margin:4px 0;font-size:14px"><input type="checkbox" class="wpPage" value="dashboard" style="width:auto"/> Customer dashboard</label>
+          <label style="display:flex;gap:8px;align-items:center;margin:4px 0;font-size:14px"><input type="checkbox" class="wpPage" value="home" style="width:auto"/> Homepage</label>
+          <label style="display:flex;gap:8px;align-items:center;margin:4px 0;font-size:14px"><input type="checkbox" class="wpPage" value="marketplace" style="width:auto"/> Marketplace (all three)</label>
+          <label style="display:flex;gap:8px;align-items:center;margin:4px 0;font-size:14px"><input type="checkbox" class="wpPage" value="all" style="width:auto"/> All customer pages (overrides the above)</label>
+          <div style="font-size:12px;color:var(--t2);margin-top:4px">It never appears on login, registration, password-reset or admin pages.</div></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn-gold" type="button" onclick="wpSave()" style="width:auto">Save Settings</button>
+          <button class="btn-sm" type="button" onclick="wpPreview()">Preview Popup</button>
+          <button class="btn-sm" type="button" style="background:var(--red)" onclick="wpReset()">Reset to Defaults</button>
+          <button class="btn-sm" type="button" onclick="wpClearMemory()">Show it again in this browser</button>
+        </div>
+        <div id="wpMeta" style="font-size:12px;color:var(--t2);margin-top:12px"></div>
       </div>
     </div>
     <div id="tab-tools" class="tab-panel">
@@ -1943,7 +2040,8 @@ const ADMIN_NAV = [
     { tab:'selfcheck', icon:'i-check-circle', label:'Deployment self-check', run:'runBoostSelfCheck' },
   ]},
   { group:'Marketplace settings', owner:true, items:[
-    { tab:'logs2', icon:'i-plug', label:'Logs 2 (Marketplace 2)', owner:true, keywords:'rakib marketplace manual switch prices stock' },
+    { tab:'logs2', icon:'i-plug', label:'Logs 2 (Marketplace 2)', owner:true, keywords:'nova novasolution marketplace manual switch prices stock' },
+    { tab:'logs3', icon:'i-plug', label:'Logs 3 (Marketplace 3)', owner:true, keywords:'rakib rakibsocials marketplace three switch prices stock orders' },
     { tab:'numbers2', icon:'i-smartphone', label:'Server 2 — low SMS rate pools', owner:true },
   ]},
   { group:'Boost', items:[
@@ -1974,6 +2072,7 @@ const ADMIN_NAV = [
     { tab:'ads',           icon:'i-megaphone', label:'Ads',            owner:true },
     { tab:'giveaways',     icon:'i-gift',      label:'Giveaways',      owner:true },
     { tab:'weeklyreward',  icon:'i-trophy',    label:'Weekly reward',  owner:true },
+    { tab:'welcomepopup', icon:'i-zap',       label:'Welcome popup',  owner:true, keywords:'welcome popup whatsapp channel announcement' },
   ]},
   { group:'Community', owner:true, items:[
     { tab:'chatadmin',  icon:'i-message-circle', label:'Chat groups', owner:true },
@@ -2075,6 +2174,8 @@ function switchTab(name,el) {
   if(name==='logs')         { loadLogs(); loadCategories(); loadCategoriesIntoSelects(); loadRestockDemand(); }
   if(name==='tools')        loadTools();
   if(name==='logs2')        { m2LoadConfig(); m2LoadProducts(false); m2LoadBalance(); m2LoadOrders(); }
+  if(name==='logs3')        { m3LoadConfig(); m3LoadProducts(false); m3LoadBalance(); m3LoadOrders(); }
+  if(name==='welcomepopup') { wpLoad(); }
   if(name==='users')        { loadUsers(); loadActiveUsersAdmin(); }
   if(name==='credit')       { loadAllUsersFor('qcBody'); refreshCreditUsers(); }
   if(name==='transactions') loadTxns();
@@ -6025,7 +6126,7 @@ async function m2SaveConfig(){
 }
 async function m2LoadBalance(){
   const el=document.getElementById('m2Balance');
-  try { const b=await aFetch('/api/admin/market2/balance'); el.innerHTML=`Supplier (RakibSocials) balance: <b>${m2N(b.balance)}</b> · alert below ${m2N(b.threshold)}`; el.style.color = b.balance < b.threshold ? 'var(--red)' : ''; }
+  try { const b=await aFetch('/api/admin/market2/balance'); el.innerHTML=`Supplier (NovaSolution) balance: <b>${m2N(b.balance)}</b> · alert below ${m2N(b.threshold)}`; el.style.color = b.balance < b.threshold ? 'var(--red)' : ''; }
   catch(e){ el.textContent='Balance check failed: '+e.message+' — check NOVA_API_KEY in your server environment'; el.style.color='var(--red)'; }
 }
 async function m2LoadProducts(refresh){
@@ -6064,6 +6165,145 @@ async function m2LoadOrders(){
 }
 
 
+// ── Logs 3 / Marketplace 3 (RakibSocials) ──
+let m3Cfg={}, m3List=[];
+function m3Btn(){
+  const b=document.getElementById('m3Btn'); if(!b) return;
+  b.textContent = m3Cfg.market3Enabled ? 'Marketplace 3 is ON — tap to disable' : 'Marketplace 3 is OFF (maintenance) — tap to enable';
+  b.style.background = m3Cfg.market3Enabled ? '' : 'var(--red)';
+}
+async function m3LoadConfig(){
+  try { m3Cfg = await aFetch('/api/admin/market3/config'); m3Btn();
+    document.getElementById('m3Msg').value=m3Cfg.maintenanceMessage||'';
+    document.getElementById('m3Low').value=m3Cfg.lowBalanceNgn||0;
+    document.getElementById('m3Email').value=m3Cfg.alertEmail||'';
+  } catch(e){ document.getElementById('m3Balance').textContent='Could not load Marketplace 3 settings: '+e.message; }
+}
+async function m3Toggle(){
+  try { await aFetch('/api/admin/market3/config','PUT',{market3Enabled: !m3Cfg.market3Enabled}); m3Cfg.market3Enabled=!m3Cfg.market3Enabled; m3Btn(); } catch(e){ alert(e.message); }
+}
+async function m3SaveConfig(){
+  try { await aFetch('/api/admin/market3/config','PUT',{ maintenanceMessage: document.getElementById('m3Msg').value, lowBalanceNgn: Number(document.getElementById('m3Low').value||0), alertEmail: document.getElementById('m3Email').value }); alert('Saved'); } catch(e){ alert(e.message); }
+}
+async function m3LoadBalance(){
+  const el=document.getElementById('m3Balance');
+  try { const b=await aFetch('/api/admin/market3/balance'); el.innerHTML=`Supplier (RakibSocials) balance: <b>${m2N(b.balance)}</b> · alert below ${m2N(b.threshold)}`; el.style.color = b.balance < b.threshold ? 'var(--red)' : ''; }
+  catch(e){ el.textContent='Balance check failed: '+e.message+' — check RAKIB_API_KEY in your server environment'; el.style.color='var(--red)'; }
+}
+async function m3LoadProducts(refresh){
+  const el=document.getElementById('m3Products'); el.textContent='Loading…';
+  try { m3List = await aFetch('/api/admin/market3/products'+(refresh?'?refresh=1':'')); m3Render(); }
+  catch(e){ el.innerHTML=`<span style="color:var(--red)">${esc(e.message)}</span>`; }
+}
+function m3Render(){
+  const q=(document.getElementById('m3Search').value||'').toLowerCase(), f=document.getElementById('m3Filter').value;
+  let rows=m3List.filter(p=>!q||`${p.name} ${p.category} ${p.customTitle}`.toLowerCase().includes(q));
+  if(f==='priced') rows=rows.filter(p=>p.priced); if(f==='unpriced') rows=rows.filter(p=>!p.priced); if(f==='instock') rows=rows.filter(p=>p.inStock);
+  document.getElementById('m3Products').innerHTML = rows.length ? `<table class="data-table" style="width:100%"><thead><tr><th>Product</th><th>Category</th><th>Stock</th><th>API cost</th><th>Your price</th><th>Profit</th><th>Show</th><th></th></tr></thead><tbody>`+
+    rows.map(p=>`<tr><td><b>${esc(p.name)}</b><br/><input type="text" id="m3t_${p.id}" value="${esc(p.customTitle)}" placeholder="Custom title (optional)" style="margin-top:4px;width:100%"/><input type="text" id="m3d_${p.id}" value="${esc(p.description)}" placeholder="Description (optional)" style="margin-top:4px;width:100%"/><input type="text" id="m3i_${p.id}" value="${esc(p.picture&&!String(p.picture).startsWith('data:')?p.picture:'')}" placeholder="Picture URL (optional)" style="margin-top:4px;width:100%"/></td>
+      <td>${esc(p.category)}</td><td style="color:${p.inStock?'var(--green,#2ecc71)':'var(--red)'}">${p.inStock?p.stock+' available':'Out of stock'}</td>
+      <td>${m2N(p.cost)}</td><td><input type="number" min="0" id="m3p_${p.id}" value="${p.sellPrice||''}" placeholder="0 = hidden" style="width:110px" oninput="m3Profit(${p.id},${p.cost})"/></td>
+      <td id="m3pr_${p.id}" style="color:${p.profit>0?'var(--green,#2ecc71)':'var(--red)'}">${p.priced?m2N(p.profit):'—'}</td>
+      <td><input type="checkbox" id="m3e_${p.id}" ${p.enabled?'checked':''}/></td>
+      <td><button class="btn-sm" type="button" onclick="m3Save(${p.id},${p.cost})">Save</button></td></tr>`).join('')+'</tbody></table>'
+    : '<div class="no-items">No products</div>';
+}
+function m3Profit(id,cost){ const v=Number(document.getElementById('m3p_'+id).value||0), el=document.getElementById('m3pr_'+id); el.textContent=v?m2N(v-cost):'—'; el.style.color=v>cost?'var(--green,#2ecc71)':'var(--red)'; }
+async function m3Save(id,cost){
+  const price=Number(document.getElementById('m3p_'+id).value||0);
+  if(price>0 && price<=cost && !confirm('Your price is not above the API cost — you would lose money. Save anyway? (customers cannot buy it until the price is above cost)')) return;
+  try { await aFetch('/api/admin/market3/products/'+id,'PUT',{ sellPrice: price, enabled: document.getElementById('m3e_'+id).checked, customTitle: document.getElementById('m3t_'+id).value, description: document.getElementById('m3d_'+id).value, picture: document.getElementById('m3i_'+id).value });
+    const p=m3List.find(x=>x.id===id); if(p){ p.sellPrice=price; p.priced=price>0; p.profit=price?price-cost:0; p.enabled=document.getElementById('m3e_'+id).checked; }
+    alert(price>0 && document.getElementById('m3e_'+id).checked ? 'Saved — visible to customers when in stock' : 'Saved — hidden from customers');
+  } catch(e){ alert(e.message); }
+}
+async function m3LoadOrders(){
+  const el=document.getElementById('m3Orders');
+  try { const d=await aFetch('/api/admin/market3/orders'); const t=d.totals;
+    m3RenderAttention(d.attention||[]);
+    const badge=s=>`<span style="color:${s==='delivered'?'var(--green,#2ecc71)':(s==='failed'||s==='refunded')?'var(--red)':'var(--gold)'};font-weight:700">${esc(s)}</span>`;
+    el.innerHTML=`<div class="info-box">Orders: <b>${t.count}</b> · Sales: <b>${m2N(t.sales)}</b> · API cost: <b>${m2N(t.cost)}</b> · Profit: <b style="color:var(--green,#2ecc71)">${m2N(t.profit)}</b></div>`+
+      (d.orders.length?`<table class="data-table" style="width:100%"><thead><tr><th>Date</th><th>User</th><th>Product</th><th>Qty</th><th>Paid</th><th>Cost</th><th>Profit</th><th>Status</th><th></th></tr></thead><tbody>`+d.orders.map(o=>`<tr><td>${new Date(o.createdAt).toLocaleString()}</td><td>${esc(o.userEmail)}</td><td>${esc(o.productName)}</td><td>${o.quantity}</td><td>${m2N(o.sellTotal)}</td><td>${m2N(o.costTotal)}</td><td>${m2N(o.profit)}</td><td>${badge(o.status)}</td><td>${(o.status==='delivered'||o.status==='partial')?`<button class="btn-sm" type="button" onclick="m3ShowKeys('${o._id}')">Keys</button>`:''}</td></tr>`).join('')+'</tbody></table>':'<div class="no-items">No sales yet</div>');
+  } catch(e){ el.textContent=e.message; }
+}
+function m3RenderAttention(list){
+  const sec=document.getElementById('m3AttentionSec'), el=document.getElementById('m3Attention');
+  if(!list.length){ sec.style.display='none'; el.innerHTML=''; return; }
+  sec.style.display='';
+  el.innerHTML=`<table class="data-table" style="width:100%"><thead><tr><th>Date</th><th>Customer</th><th>Product</th><th>Paid</th><th>Status</th><th>What happened</th><th>Fix</th></tr></thead><tbody>`+
+    list.map(o=>`<tr><td>${new Date(o.createdAt).toLocaleString()}</td><td>${esc(o.userEmail)}</td><td>${esc(o.title)}</td><td>${m2N(o.sellTotal)}</td><td><b>${esc(o.status)}</b></td><td style="max-width:260px">${esc(o.note||'Waiting to finish…')}</td>
+      <td style="min-width:240px">${o.status==='review'||o.status==='pending'?`<textarea id="m3k_${o._id}" rows="3" placeholder="Paste the keys from RakibSocials, one per line" style="width:100%"></textarea>
+        <button class="btn-sm" type="button" onclick="m3Deliver('${o._id}')">Deliver keys</button>
+        <button class="btn-sm" type="button" style="background:var(--red)" onclick="m3Refund('${o._id}')">Refund customer</button>`
+        :`<button class="btn-sm" type="button" onclick="m3Resync('${o._id}')">Re-send to customer</button>`}</td></tr>`).join('')+'</tbody></table>';
+}
+async function m3Deliver(id){
+  const keys=(document.getElementById('m3k_'+id).value||'').trim();
+  if(!keys){ alert('Paste the keys first (one per line).'); return; }
+  if(!confirm('Deliver these keys to the customer now?')) return;
+  try { await aFetch('/api/admin/market3/orders/'+id+'/deliver','POST',{keys}); alert('Delivered to the customer'); m3LoadOrders(); } catch(e){ alert(e.message); }
+}
+async function m3Refund(id){
+  if(!confirm('Refund this customer the full amount? Only do this if the order was NOT delivered by RakibSocials.')) return;
+  try { await aFetch('/api/admin/market3/orders/'+id+'/refund','POST',{}); alert('Customer refunded'); m3LoadOrders(); } catch(e){ alert(e.message); }
+}
+async function m3Resync(id){
+  try { const r=await aFetch('/api/admin/market3/orders/'+id+'/resync','POST',{}); alert(r.ok?'Sent to the customer’s purchases':'Nothing to send'); m3LoadOrders(); } catch(e){ alert(e.message); }
+}
+async function m3ShowKeys(id){
+  try { const r=await aFetch('/api/admin/market3/orders/'+id+'/keys'); alert((r.userEmail||'')+'\n\n'+((r.keys||[]).join('\n')||'(no keys stored)')); } catch(e){ alert(e.message); }
+}
+
+// ── Welcome popup settings ──
+let wpToggleOn=false;
+const wpEl=id=>document.getElementById(id);
+function wpRenderToggle(){ const b=wpEl('wpToggle'); b.textContent = wpToggleOn ? 'Popup is ON — tap to disable' : 'Popup is OFF — tap to enable'; b.style.background = wpToggleOn ? '' : 'var(--red)'; }
+function wpToggle(){ wpToggleOn=!wpToggleOn; wpRenderToggle(); }
+function wpFill(s){
+  wpToggleOn=!!s.enabled; wpRenderToggle();
+  wpEl('wpUrl').value=s.channelUrl||''; wpEl('wpHeading').value=s.heading||''; wpEl('wpSubtitle').value=s.subtitle||'';
+  wpEl('wpDesc').value=s.description||''; wpEl('wpMore').value=s.additionalMessage||'';
+  wpEl('wpWaText').value=s.whatsappButtonText||''; wpEl('wpLaterText').value=s.dismissButtonText||'';
+  wpEl('wpFreq').value=s.displayFrequency||'first'; wpEl('wpDelay').value=String(s.displayDelay==null?1000:s.displayDelay);
+  document.querySelectorAll('.wpPage').forEach(c=>{ c.checked=(s.eligiblePages||[]).includes(c.value); });
+  wpEl('wpUrlErr').style.display='none';
+}
+function wpCollect(){
+  return {
+    enabled: wpToggleOn, channelUrl: wpEl('wpUrl').value.trim(), heading: wpEl('wpHeading').value, subtitle: wpEl('wpSubtitle').value,
+    description: wpEl('wpDesc').value, additionalMessage: wpEl('wpMore').value, whatsappButtonText: wpEl('wpWaText').value, dismissButtonText: wpEl('wpLaterText').value,
+    displayFrequency: wpEl('wpFreq').value, displayDelay: Number(wpEl('wpDelay').value),
+    eligiblePages: Array.from(document.querySelectorAll('.wpPage')).filter(c=>c.checked).map(c=>c.value)
+  };
+}
+function wpUrlOk(u){ return !u || /^https:\/\/(www\.)?whatsapp\.com\/channel\/[A-Za-z0-9_-]{6,80}\/?$/.test(u); }
+function wpMeta(d){ wpEl('wpMeta').textContent = d && d.updatedAt ? 'Last saved '+new Date(d.updatedAt).toLocaleString()+(d.updatedBy?' by '+d.updatedBy:'') : 'Using the default settings (nothing saved yet).'; }
+async function wpLoad(){
+  try { const d=await aFetch('/api/admin/welcome-popup'); wpFill(d.settings); wpMeta(d); }
+  catch(e){ wpEl('wpMeta').textContent='Could not load the popup settings: '+e.message; }
+}
+async function wpSave(){
+  const body=wpCollect(), err=wpEl('wpUrlErr');
+  if(!wpUrlOk(body.channelUrl)){ err.textContent='Enter a valid WhatsApp channel link, like https://whatsapp.com/channel/XXXXXXXX (https only).'; err.style.display='block'; wpEl('wpUrl').focus(); return; }
+  err.style.display='none';
+  try {
+    const d=await aFetch('/api/admin/welcome-popup','PUT',body);
+    wpFill(d.settings); wpMeta(d);
+    alert('Settings saved.'+(d.warning?'\n\nNote: '+d.warning:''));
+  } catch(e){ if(/WhatsApp/i.test(e.message)){ err.textContent=e.message; err.style.display='block'; } alert('Not saved: '+e.message); }
+}
+function wpPreview(){
+  const body=wpCollect();
+  if(!wpUrlOk(body.channelUrl)){ alert('The WhatsApp link is not valid, so the preview would show it as not set up.'); }
+  if(!window.KSHWelcomePopup){ alert('The preview is still loading — try again in a moment.'); return; }
+  window.KSHWelcomePopup.preview(body);
+}
+async function wpReset(){
+  if(!confirm('Reset the welcome popup to its default text and settings? This clears the saved WhatsApp link too. Nothing else on the site is affected.')) return;
+  try { const d=await aFetch('/api/admin/welcome-popup/reset','POST',{}); wpFill(d.settings); wpMeta(d); alert('Reset to defaults.'); } catch(e){ alert(e.message); }
+}
+function wpClearMemory(){ if(window.KSHWelcomePopup){ window.KSHWelcomePopup.clearBrowserMemory(); alert('Done. The popup can show again in this browser (if it is enabled and the frequency allows).'); } }
+
 // ── Saved-catalogue sync (numbers + Boost 2) ─────────────────────────────────
 let _novaSyncTimer = null;
 async function pollNovaSync() {
@@ -6096,5 +6336,7 @@ function novaBoostRender(){const el=document.getElementById('novaBoostRows');if(
 async function novaBoostSave(id){try{const mode=document.getElementById('nbm'+id).value;await aFetch('/api/admin/boost2/services/'+id,'PUT',{mode,sellPrice:Number(document.getElementById('nbs'+id).value||0),markup:Number(document.getElementById('nbk'+id).value||0),enabled:document.getElementById('nbe'+id).checked});alert('Boost 2 price saved');await novaBoostLoad()}catch(e){alert(e.message)}}
 
 </script>
+<script>window.KSH_NO_WELCOME_AUTOSTART=true;</script>
+<script src="/welcome-popup.js?v=1" defer></script>
 </body>
 </html>
