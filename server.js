@@ -395,7 +395,7 @@ const userSchema = new mongoose.Schema({
  deliverableFile: String,
  deliverableFileName: String,
  pricePaid: Number,
- source: { type: String, default: 'market1' }, // 'market1' manual logs · 'market2' RakibSocials API
+ source: { type: String, default: 'market1' }, // 'market1' manual logs · 'market2' NovaSolution API · 'market3' RakibSocials API
  purchasedAt: { type: Date, default: Date.now }
  }],
  createdAt: { type: Date, default: Date.now }
@@ -1442,8 +1442,12 @@ const anyAdminAuth = async (req, res, next) => {
  if (p && p === process.env.ADMIN_PASSCODE) { req.adminRole = 'super'; return next(); }
  return subAdminAuth(req, res, next);
 };
-// Marketplace 2 (RakibSocials API) + marketplace on/off switches — see lib/market2.js
+// Marketplace 2 (NovaSolution API) + marketplace on/off switches — see lib/market2.js
 require('./lib/market2').register(app, { mongoose, User, Transaction, auth, anyAdminAuth, sendAdminEmail });
+// Marketplace 3 (RakibSocials API) - see lib/market3.js
+require('./lib/market3').register(app, { mongoose, User, Transaction, auth, anyAdminAuth, sendAdminEmail });
+// Welcome popup (WhatsApp channel promo) - settings editable in Admin -> Welcome Popup
+require('./lib/welcomepopup').register(app, { mongoose, adminAuth });
 require('./lib/boost2')({ app, mongoose, User, Transaction, auth, anyAdminAuth, novaGate });
 function sanitizeUser(u) {
  return {
@@ -7539,6 +7543,7 @@ app.get('/virtual-account', (req, res) => res.redirect(301, '/deposit'));
 app.get('/number-history', (req, res) => (res.set('Cache-Control', 'no-store, must-revalidate'), res.sendFile(path.join(__dirname, 'public', 'number-history.html'))));
 app.get('/order-status', (req, res) => (res.set('Cache-Control', 'no-store, must-revalidate'), res.sendFile(path.join(__dirname, 'public', 'order-status.html'))));
 app.get('/marketplace2', (req, res) => (res.set('Cache-Control', 'no-store, must-revalidate'), res.sendFile(path.join(__dirname, 'public', 'marketplace2.html'))));
+app.get('/marketplace3', (req, res) => (res.set('Cache-Control', 'no-store, must-revalidate'), res.sendFile(path.join(__dirname, 'public', 'marketplace3.html'))));
 app.get('/marketplace', (req, res) => (res.set('Cache-Control', 'no-store, must-revalidate'), res.sendFile(path.join(__dirname, 'public', 'marketplace.html'))));
 app.get('/tools', (req, res) => (res.set('Cache-Control', 'no-store, must-revalidate'), res.sendFile(path.join(__dirname, 'public', 'tools.html'))));
 // Friendly category deep links — /logs/whatsapp, /marketplace/gmail, /tools/vpn.
