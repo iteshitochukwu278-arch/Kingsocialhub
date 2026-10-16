@@ -1293,6 +1293,17 @@ const gameScoreSchema = new mongoose.Schema({
  createdAt: { type: Date, default: Date.now }
 });
 const Category = mongoose.model('Category', categorySchema);
+// Password-reset / engagement fields. These MUST be on the schema BEFORE the
+// model is compiled, otherwise Mongoose never saves or reads them and every
+// reset code shows as "invalid".
+userSchema.add({
+ resetCodeHash: { type: String, default: '' },
+ resetCodeExpires: { type: Date, default: null },
+ resetCodeAttempts: { type: Number, default: 0 },
+ resetCodeSentAt: { type: Date, default: null },
+ passwordChangedAt: { type: Date, default: null },
+ lastWinbackEmailAt: { type: Date, default: null }
+});
 const User = mongoose.model('User', userSchema);
 const Log = mongoose.model('Log', logSchema);
 const Transaction = mongoose.model('Transaction', transactionSchema);
