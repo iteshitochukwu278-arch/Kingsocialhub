@@ -3001,14 +3001,44 @@ function switchDepMethod(method) {
   if (method === 'va') depGoVAWithPoller();
   else { stopVAPoller(); depGoPL(); }
 }
+// ── VIRTUAL ACCOUNT GATEWAY PICKER (Flutterwave / Paystack) ─────────────────────────────
+// Shown only when the admin has both gateways switched on; otherwise the one that is on is used.
+let selectedVAGateway = '';
+let _vaPendingRetries = 0;
+function vaGatewaysAvailable() {
+  const g = window.KLS_VA_GATEWAYS;
+  if (!g) return ['flutterwave'];
+  return ['flutterwave', 'paystack'].filter(k => g[k]);
+}
+function renderVAGatewayChooser() {
+  const avail = vaGatewaysAvailable();
+  if (!avail.includes(selectedVAGateway)) selectedVAGateway = avail[0] || 'flutterwave';
+  const box = document.getElementById('vaGatewayChooser');
+  if (!box) return;
+  if (avail.length < 2) { box.style.display = 'none'; box.innerHTML = ''; return; }
+  box.style.display = 'block';
+  box.innerHTML = '<div style="font-size:.78rem;font-weight:700;color:var(--t2);margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">Bank account provider</div>' +
+    '<div style="display:flex;gap:10px">' + avail.map(g =>
+      `<button type="button" onclick="pickVAGateway('${g}')" style="flex:1;padding:12px 10px;border-radius:10px;cursor:pointer;font:inherit;font-weight:700;` +
+      `border:2px solid ${g === selectedVAGateway ? 'var(--accent)' : 'var(--border2, rgba(255,255,255,.15))'};` +
+      `background:${g === selectedVAGateway ? 'rgba(22,163,74,.14)' : 'transparent'};color:var(--t1)">${GATEWAY_NAMES[g]}</button>`
+    ).join('') + '</div>';
+}
+function pickVAGateway(g) {
+  selectedVAGateway = g;
+  _vaPendingRetries = 0;
+  if (typeof stopVAPoller === 'function') stopVAPoller();
+  loadVAInDeposit();
+}
 async function loadVAInDeposit() {
+  renderVAGatewayChooser();
   const states = ['vaLoadingState','vaAccountCard','vaGenerateCard','vaDisabledCard'];
   states.forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
   const loadEl = document.getElementById('vaLoadingState');
   if (loadEl) loadEl.style.display = 'block';
   try {
     const token = localStorage.getItem('ksl_token');
-    const res = await fetch('/api/user/virtual-account', { headers: { Authorization: 'Bearer ' + token } });
+    const res = await fetch('/api/user/virtual-account?gateway=' + encodeURIComponent(selectedVAGateway || 'flutterwave'), { headers: { Authorization: 'Bearer ' + token } });
     const va  = await res.json();
     console.log('[King Social Hub] virtual-account response', res.status, va);
     if (loadEl) loadEl.style.display = 'none';
@@ -3036,6 +3066,11 @@ async function loadVAInDeposit() {
     if (!va.enabled || !va.accountNumber) {
       const genEl = document.getElementById('vaGenerateCard');
       if (genEl) genEl.style.display = 'block';
+      if (va.pending) {
+        const pfb = document.getElementById('vaGenerateFeedback');
+        if (pfb) { pfb.textContent = 'Your account is being set up — this takes a few seconds…'; pfb.style.color = 'var(--t2)'; }
+        if (_vaPendingRetries++ < 6) setTimeout(() => { if (document.getElementById('vaGenerateCard')?.style.display !== 'none') loadVAInDeposit(); }, 5000);
+      }
       // Show new-user prompt banner inside the generate card
       const isNewUser = !currentUser?.createdAt || (Date.now() - new Date(currentUser.createdAt).getTime() < 7 * 24 * 60 * 60 * 1000);
       const existingBanner = document.getElementById('vaNewUserBanner');
@@ -3099,7 +3134,8 @@ async function generateVirtualAccount() {
     const token = localStorage.getItem('ksl_token');
     const res = await fetch('/api/user/virtual-account/create', {
       method: 'POST',
-      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ gateway: selectedVAGateway || 'flutterwave' })
     });
     const data = await res.json();
     console.log('[King Social Hub] virtual-account/create response', res.status, data);
@@ -3466,14 +3502,20 @@ async function checkPaymentMethodSettings() {
     const plCard  = document.getElementById('depChoosePL');
     const plNote  = document.getElementById('depPlUnavailableNote');
     const plBtn   = document.getElementById('depPlGenerateBtn');
-    const plOff   = data.paymentlink && data.paymentlink.enabled === false;
+    window.KLS_GATEWAYS = data.gateways || null;
+    window.KLS_VA_GATEWAYS = data.vaGateways || null;
+    renderVAGatewayChooser();
+    const gwList = data.gateways ? ['flutterwave', 'paystack'].filter(g => data.gateways[g] && data.gateways[g].available) : null;
+    const noGateway = !!gwList && gwList.length === 0;
+    renderGatewayChooser(data.gateways, data.defaultGateway);
+    const plOff   = (data.paymentlink && data.paymentlink.enabled === false) || noGateway;
     if (plCard) {
       if (plOff) {
         plCard.classList.add('dep-disabled');
         plCard.onclick = null; plCard.onkeydown = null;
         if (plBtn) plBtn.disabled = true;
         if (plNote) {
- plNote.textContent = ' ' + (data.paymentlink.disabledMessage || 'Payment Link is temporarily unavailable — please use Bank Transfer instead.');
+ plNote.textContent = ' ' + ((data.paymentlink && data.paymentlink.disabledMessage) || (noGateway && data.gateways && (data.gateways.flutterwave.disabledMessage || data.gateways.paystack.disabledMessage)) || 'Payment Link is temporarily unavailable — please use Bank Transfer instead.');
           plNote.style.display = 'block';
         }
       } else {
@@ -3572,7 +3614,7 @@ function showDepositResultCard(state) {
       <p style="color:var(--t2);font-size:.9rem;margin:0 0 16px;line-height:1.5">${msgs[state]}</p>
       ${state==='pending' ? `
         <div id="depPendingSpinner" style="margin:0 auto 12px;width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--gold,#f59e0b);border-radius:50%;animation:spin 0.8s linear infinite"></div>
-        <p id="depPendingStatus" style="color:var(--t2);font-size:.82rem;margin:0 0 12px">Checking with Flutterwave every 5 seconds…</p>
+        <p id="depPendingStatus" style="color:var(--t2);font-size:.82rem;margin:0 0 12px">Checking your payment every 5 seconds…</p>
         <button class="btn-secondary" onclick="manualCheckPending()" style="margin-bottom:8px"><svg class="icon i-refresh" aria-hidden="true"><use href="#i-refresh"/></svg> Check Now</button>
       ` : ''}
       ${state==='success' ? `<button class="btn-primary" onclick="showPage('market')"><svg class="icon i-cart" aria-hidden="true"><use href="#i-cart"/></svg> Shop Marketplace</button>` : ''}
@@ -3780,6 +3822,30 @@ function openFakeLoad(then) {
 // Our deposit page only offers Bank Transfer — Flutterwave's own hosted checkout page still
 // shows Card/USSD/etc. as switchable tabs there, this just controls what opens first.
 const selectedPlMethod = 'banktransfer';
+// ── PAYMENT GATEWAY PICKER (Flutterwave / Paystack) ──────────────────────────────────────
+// The admin switches each gateway on/off. This shows the customer only what is currently on:
+// two on -> a picker, one on -> used silently, none on -> Payment Link greys out.
+let selectedGateway = '';
+const GATEWAY_NAMES = { flutterwave: 'Flutterwave', paystack: 'Paystack' };
+function gatewayName() { return GATEWAY_NAMES[selectedGateway] || 'our secure payment partner'; }
+function renderGatewayChooser(gateways, defaultGateway) {
+  const box = document.getElementById('depGatewayChooser');
+  const avail = ['flutterwave', 'paystack'].filter(g => gateways && gateways[g] && gateways[g].available);
+  if (!avail.includes(selectedGateway)) selectedGateway = avail.includes(defaultGateway) ? defaultGateway : (avail[0] || '');
+  if (!box) return;
+  if (avail.length < 2) { box.style.display = 'none'; box.innerHTML = ''; return; }
+  box.style.display = 'block';
+  box.innerHTML = '<div class="dep-amt-label" style="margin-bottom:8px">Pay with</div>' +
+    '<div style="display:flex;gap:10px">' + avail.map(g =>
+      `<button type="button" data-gw="${g}" onclick="pickGateway('${g}')" style="flex:1;padding:12px 10px;border-radius:10px;cursor:pointer;font:inherit;font-weight:700;` +
+      `border:2px solid ${g === selectedGateway ? 'var(--accent)' : 'var(--border2, rgba(255,255,255,.15))'};` +
+      `background:${g === selectedGateway ? 'rgba(22,163,74,.14)' : 'transparent'};color:var(--t1)">${GATEWAY_NAMES[g]}</button>`
+    ).join('') + '</div>';
+}
+function pickGateway(g) {
+  selectedGateway = g;
+  renderGatewayChooser(window.KLS_GATEWAYS, g);
+}
 // ── DEPOSIT CURRENCY UI ────────────────────────────────────────────────────
 // The wallet ledger is naira, but only customers in Nigeria are charged in
 // naira. Everyone else pays in US dollars, so the whole payment-link amount
@@ -3800,7 +3866,7 @@ function applyDepositCurrencyUI() {
   if (sym)   sym.textContent   = usd ? '$' : '\u20a6';
   if (note)  note.textContent  = usd
     ? 'Enter the amount in US dollars. Your wallet is credited with the naira equivalent at today\u2019s exchange rate.'
-    : 'Enter the amount to credit your wallet. A small processing fee covers Flutterwave costs.';
+    : 'Enter the amount to credit your wallet. A small processing fee covers payment processing costs.';
   if (input) {
     input.placeholder = usd ? 'e.g. 10' : 'e.g. 1000';
     input.min  = usd ? '1' : '100';
@@ -3843,7 +3909,7 @@ function startPaymentLinkCheckout() {
     // Outside Nigeria the amount typed IS the dollar amount charged; the naira
     // credit is worked out by the server at the live rate, minus the same fee.
     if (!amount || amount < 1) return setFb(fb, 'Enter a valid amount (minimum $1)', 'err');
-    document.getElementById('depPlConfirmMethod').textContent = ' Flutterwave (International Card)';
+    document.getElementById('depPlConfirmMethod').textContent = ' ' + gatewayName() + ' (International Card)';
     const feeElU = document.getElementById('depPlConfirmFee');
     const chargeElU = document.getElementById('depPlConfirmCharge');
     if (feeElU) feeElU.textContent = 'Included';
@@ -3863,7 +3929,7 @@ function startPaymentLinkCheckout() {
   else if (amount >= 1000 && amount <= 9999) fee = 50;
   else if (amount >= 10000) fee = 100;
   const charged = amount + fee;
- document.getElementById('depPlConfirmMethod').textContent = ' Flutterwave (Bank / Card / OPay)';
+ document.getElementById('depPlConfirmMethod').textContent = ' ' + gatewayName() + (selectedGateway === 'paystack' ? ' (Card / Bank / USSD)' : ' (Bank / Card / OPay)');
   const feeEl = document.getElementById('depPlConfirmFee');
   const chargeEl = document.getElementById('depPlConfirmCharge');
   if (feeEl) feeEl.textContent = '₦' + fmtNGNn(fee);
@@ -3888,9 +3954,9 @@ async function createPaymentLink() {
   }
   btn.disabled = true; btn.textContent = 'Preparing payment...'; setFb(fb, '', '');
   try {
-    const data = await req('/api/deposit/paymentlink/create', 'POST', { amount, method: selectedPlMethod }, true);
+    const data = await req('/api/deposit/paymentlink/create', 'POST', { amount, method: selectedPlMethod, gateway: selectedGateway || undefined }, true);
     currentPaymentLinkTxRef = data.txRef;
-    // Send the user to Flutterwave's hosted page — they'll be redirected back to THIS deposit
+    // Send the user to the gateway's hosted page — they'll be redirected back to THIS deposit
     // page after paying (server sends them to /deposit, not home).
     window.location.href = data.link;
   } catch (e) {

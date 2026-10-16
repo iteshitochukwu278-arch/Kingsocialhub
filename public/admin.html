@@ -876,6 +876,38 @@ tr:hover td{background:rgba(255,255,255,.035)}
           <p style="font-size:.8rem;color:var(--t2);margin:6px 0 0">When OFF — the Bank Transfer card on the Deposit page is greyed out and disabled instantly.</p>
           <div id="pmFeedbackVirtualAccount" class="form-feedback"></div>
         </div>
+        <div class="pm-row" id="pmRowGateways" style="margin-bottom:14px">
+          <div class="pm-row-head">
+            <span class="pm-row-title">Payment Gateways (Payment Link checkout)</span>
+          </div>
+          <p style="font-size:.8rem;color:var(--t2);margin:6px 0 10px">Turn each gateway on or off at any time. <b>Both on</b> = customers pick one. <b>One on</b> = everyone uses it. <b>Both off</b> = Payment Link is unavailable. Both gateways can issue Virtual Accounts (bank transfer) — switching a gateway off stops new accounts for it and hides it from customers. Payments already made are always still credited.</p>
+          <div class="pm-row" style="margin-bottom:10px">
+            <div class="pm-row-head">
+              <span class="pm-row-title">Flutterwave <small id="gwStatusFlutterwave" style="font-weight:500;color:var(--t2)"></small></span>
+              <label class="pm-switch">
+                <input type="checkbox" id="gwToggleFlutterwave" onchange="toggleGateway('flutterwave', this.checked)"/>
+                <span class="pm-slider"></span>
+              </label>
+            </div>
+            <div class="fg"><label>Message shown to users when off</label><input type="text" id="gwMsgFlutterwave" placeholder="e.g. Flutterwave is under maintenance — please use Paystack."/></div>
+            <button class="btn-secondary" onclick="saveGatewayMessage('flutterwave')">Save Message</button>
+            <div id="gwFeedbackFlutterwave" class="form-feedback"></div>
+            <p style="font-size:.74rem;color:var(--t2);margin:6px 0 0">Webhook URL: <code id="gwHookFlutterwave"></code></p>
+          </div>
+          <div class="pm-row">
+            <div class="pm-row-head">
+              <span class="pm-row-title">Paystack <small id="gwStatusPaystack" style="font-weight:500;color:var(--t2)"></small></span>
+              <label class="pm-switch">
+                <input type="checkbox" id="gwTogglePaystack" onchange="toggleGateway('paystack', this.checked)"/>
+                <span class="pm-slider"></span>
+              </label>
+            </div>
+            <div class="fg"><label>Message shown to users when off</label><input type="text" id="gwMsgPaystack" placeholder="e.g. Paystack is under maintenance — please use Flutterwave."/></div>
+            <button class="btn-secondary" onclick="saveGatewayMessage('paystack')">Save Message</button>
+            <div id="gwFeedbackPaystack" class="form-feedback"></div>
+            <p style="font-size:.74rem;color:var(--t2);margin:6px 0 0">Webhook URL (paste in Paystack dashboard → Settings → API Keys &amp; Webhooks): <code id="gwHookPaystack"></code></p>
+          </div>
+        </div>
         <div class="pm-row" id="pmRowPaymentlink">
           <div class="pm-row-head">
  <span class="pm-row-title"><svg class="icon i-link" aria-hidden="true"><use href="#i-link"/></svg> Payment Link</span>
@@ -3942,7 +3974,47 @@ async function loadPaymentMethodsAdmin() {
     if (plMsg)    plMsg.value = plSettings.disabledMessage || '';
     const vaToggle = document.getElementById('pmToggleVirtualAccount');
     if (vaToggle) vaToggle.checked = !!vaData.globalEnabled;
+    loadGatewaysAdmin();
   } catch(e) { console.error('Failed to load payment method settings', e); }
+}
+async function loadGatewaysAdmin() {
+  try {
+    const g = await aFetch('/api/admin/payment-gateways');
+    [['flutterwave','Flutterwave'],['paystack','Paystack']].forEach(([key, name]) => {
+      const st = g[key] || {};
+      const toggle = document.getElementById('gwToggle' + name);
+      const msg = document.getElementById('gwMsg' + name);
+      const status = document.getElementById('gwStatus' + name);
+      const hook = document.getElementById('gwHook' + name);
+      if (toggle) toggle.checked = !!st.enabled;
+      if (msg) msg.value = st.disabledMessage || '';
+      if (status) status.textContent = !st.configured ? '— API keys NOT set on server' : (st.enabled ? '— ON' : '— OFF');
+      if (hook) hook.textContent = (g.webhookUrls && g.webhookUrls[key]) || ('/api/webhooks/' + key);
+    });
+  } catch (e) { console.error('Failed to load payment gateways', e); }
+}
+async function toggleGateway(gateway, enabled) {
+  const name = gateway === 'paystack' ? 'Paystack' : 'Flutterwave';
+  const fb = document.getElementById('gwFeedback' + name);
+  setFb(fb, 'Saving...', '');
+  try {
+    await aFetch('/api/admin/payment-gateways/' + gateway, 'POST', { enabled });
+    setFb(fb, enabled ? name + ' is ON — customers can pay with it now.' : name + ' is OFF — hidden from customers.', 'ok');
+    loadGatewaysAdmin();
+  } catch (e) {
+    setFb(fb, e.message, 'err');
+    const t = document.getElementById('gwToggle' + name);
+    if (t) t.checked = !enabled;
+  }
+}
+async function saveGatewayMessage(gateway) {
+  const name = gateway === 'paystack' ? 'Paystack' : 'Flutterwave';
+  const fb = document.getElementById('gwFeedback' + name);
+  setFb(fb, 'Saving...', '');
+  try {
+    await aFetch('/api/admin/payment-gateways/' + gateway, 'POST', { disabledMessage: gv('gwMsg' + name) });
+    setFb(fb, 'Message saved.', 'ok');
+  } catch (e) { setFb(fb, e.message, 'err'); }
 }
 async function toggleVirtualAccountGlobal(enabled) {
   const fb = document.getElementById('pmFeedbackVirtualAccount');
