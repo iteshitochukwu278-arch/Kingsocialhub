@@ -1937,11 +1937,7 @@ function closeModal(e) {
 // ── BUY ────────────────────────────────────────────────────────
 async function buySubAccount(logId, subId, price) {
   if (!token) { closeModal(); showPage('login'); return; }
-  if ((currentUser.balance||0) < price) {
-    showToast('Insufficient balance! Deposit funds first.','err');
-    document.getElementById('itemModal').classList.remove('open');
-    showPage('deposit'); return;
-  }
+  // The server is the only judge of the balance (the cached one can be stale).
   if (!await kslConfirm(`Are you ready to make this purchase? ${P(price)} will be deducted from your wallet.`)) return;
   const btn=document.getElementById('subBuyBtnBottom');
   if (btn) { btn.disabled=true; btn.textContent='Processing...'; }
@@ -1965,6 +1961,7 @@ async function buySubAccount(logId, subId, price) {
   } catch(e) {
  if (btn) { btn.disabled=false; btn.textContent=` Buy Now — ${P(price)}`; }
     showToast(e.message,'err');
+    if (/insufficient balance/i.test(e.message||'')) { document.getElementById('itemModal').classList.remove('open'); showPage('deposit'); }
   }
 }
 let _selectedSubAccounts = new Map(); // subId -> { itemId, subId, price } — all currently checked rows in the open folder modal
@@ -2089,11 +2086,6 @@ async function buySelectedSubAccounts() {
   const items = [..._selectedSubAccounts.values()];
   const itemId = items[0].itemId;
   const total = items.reduce((s, i) => s + i.price, 0);
-  if ((currentUser.balance||0) < total) {
-    showToast('Insufficient balance! Deposit funds first.','err');
-    document.getElementById('itemModal').classList.remove('open');
-    showPage('deposit'); return;
-  }
   if (!await kslConfirm(`Buy ${items.length} account${items.length>1?'s':''} for ${P(total)} total? This will be deducted from your wallet.`)) return;
   const btn = document.getElementById('subBuyBtnBottom');
   if (btn) { btn.disabled = true; btn.textContent = 'Processing...'; }
@@ -2117,17 +2109,13 @@ async function buySelectedSubAccounts() {
   } catch(e) {
     if (btn) { updateSubQtyBar(); }
     showToast(e.message,'err');
+    if (/insufficient balance/i.test(e.message||'')) { document.getElementById('itemModal').classList.remove('open'); showPage('deposit'); }
   }
 }
 async function buyItem(id) {
   if (!token) { closeModal(); showPage('login'); return; }
   const item=modalCache[id];
   if (!item) return;
-  if ((currentUser.balance||0)<item.price) {
-    showToast('Insufficient balance! Deposit funds first.','err');
-    document.getElementById('itemModal').classList.remove('open');
-    showPage('deposit'); return;
-  }
   if (!await kslConfirm(`Are you ready to make this purchase? ${P(item.price)} will be deducted from your wallet.`)) return;
   const btn=document.getElementById('mbuyBtn');
   if (btn) { btn.disabled=true; btn.textContent='Processing...'; }
@@ -2177,6 +2165,7 @@ async function buyItem(id) {
   } catch(e) {
     showToast(e.message,'err');
  if (btn) { btn.disabled=false; btn.textContent=` Buy Now — ${P(item.price)}`; }
+    if (/insufficient balance/i.test(e.message||'')) { document.getElementById('itemModal').classList.remove('open'); showPage('deposit'); }
   }
 }
 // (Deposit logic — including refreshBalance() — lives further down, see "DEPOSIT — FLUTTERWAVE BANK TRANSFER" section)
