@@ -1,3 +1,7 @@
+// Safety net: if /js/kls-ui.js ever fails to load, Buy buttons must still work (plain browser confirm).
+if (typeof window.kslConfirm !== 'function') {
+  window.kslConfirm = function (m) { return Promise.resolve(window.confirm(m)); };
+}
 (function(){try{if(window.__kslBackLoader)return;window.__kslBackLoader=true;var s=document.createElement('script');s.src='/js/back-button.js?v=1';s.defer=true;document.head.appendChild(s);}catch(e){}})();
 // ── CONFIG ─────────────────────────────────────────────────────
 const API = '';
