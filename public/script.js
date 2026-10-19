@@ -1952,7 +1952,7 @@ async function buySubAccount(logId, subId, price) {
     updateNav(); delete modalCache[logId]; allMarketLogs=[];
     const detailBlock=`<div class="detail-box">
         <div class="detail-box-lbl"><svg class="icon i-lock" aria-hidden="true"><use href="#i-lock"/></svg> Your Account Details</div>
-        <pre id="logDetailsPre_${subId}">${esc(data.logDetails)}</pre>
+        <pre id="logDetailsPre_${subId}">${esc(data.logDetails || data.toolLink || 'No details were returned — open View My Purchases, or contact support.')}</pre>
         <button class="trb-copy" onclick="copyText('logDetailsPre_${subId}',this)"><svg class="icon i-clipboard" aria-hidden="true"><use href="#i-clipboard"/></svg> Copy</button>
       </div>`;
     document.getElementById('modalBody').innerHTML = `<div class="m-body">
@@ -2100,7 +2100,7 @@ async function buySelectedSubAccounts() {
     updateNav(); delete modalCache[itemId]; allMarketLogs = [];
     const detailBlocks = data.items.map((it, idx) => `<div class="detail-box" style="margin-bottom:12px">
         <div class="detail-box-lbl"><svg class="icon i-lock" aria-hidden="true"><use href="#i-lock"/></svg> ${esc(it.logTitle)}</div>
-        <pre id="logDetailsPre_multi_${idx}">${esc(it.logDetails)}</pre>
+        <pre id="logDetailsPre_multi_${idx}">${esc(it.logDetails || it.toolLink || 'No details were returned — open View My Purchases below, or contact support with your purchase ID.')}</pre>
         <button class="trb-copy" onclick="copyText('logDetailsPre_multi_${idx}',this)"><svg class="icon i-clipboard" aria-hidden="true"><use href="#i-clipboard"/></svg> Copy</button>
       </div>`).join('');
     document.getElementById('modalBody').innerHTML = `<div class="m-body">
