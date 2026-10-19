@@ -139,6 +139,15 @@ app.use((req, res, next) => { stripOperators(req.body); stripOperators(req.query
 // HTML pages are never cached: visitors were still being served an old copy of
 // the home page (and other pages) out of the browser/CDN cache after a deploy.
 // Versioned assets (?v=...) keep their normal cache.
+// Pages load /js/kls-ui.js and /js/back-button.js. If those files were uploaded to public/ instead of public/js/,
+// serve them from there so confirm pop-ups (used by every Buy button) never 404.
+['kls-ui.js', 'back-button.js'].forEach(name => {
+  app.get('/js/' + name, (req, res, next) => {
+    const proper = path.join(__dirname, 'public', 'js', name), root = path.join(__dirname, 'public', name);
+    if (!fs.existsSync(proper) && fs.existsSync(root)) return res.sendFile(root);
+    next();
+  });
+});
 app.use(express.static('public', {
   index: false,
   setHeaders(res, filePath) {
