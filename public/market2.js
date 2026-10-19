@@ -117,6 +117,16 @@ async function m2Buy(id) {
   btn.disabled = true; btn.textContent = 'Processing…';
   try {
     const r = await req('/api/market2/buy', 'POST', { productId: id, quantity }, true);
+    if (r.pending) {
+      document.getElementById('m2Result').innerHTML = `<div class="pc-details-wrap" style="margin-top:16px">
+        <p style="color:var(--green,#2ecc71);font-weight:700;margin:0 0 8px">Payment received — ${P(r.amountPaid)}</p>
+        <p style="font-size:13px;color:var(--t2);margin:0">${esc(r.message || 'Your credentials are being finalised and will appear in My Purchases shortly. Please do not buy again.')}</p>
+        <p style="font-size:12px;color:var(--t2);margin-top:8px"><a href="/purchases">Open My Purchases</a></p></div>`;
+      btn.style.display = 'none';
+      showToast('Order received — credentials coming shortly', 'ok');
+      if (typeof updateNav === 'function') try { updateNav(); } catch (e) {}
+      return;
+    }
     const keys = (r.keys || []).join('\n');
     document.getElementById('m2Result').innerHTML = `<div class="pc-details-wrap" style="margin-top:16px">
       <p style="color:var(--green,#2ecc71);font-weight:700;margin:0 0 8px">Purchase successful — ${P(r.amountPaid)}</p>
