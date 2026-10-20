@@ -3,13 +3,11 @@
 <head>
 <script src="/js/auth-keeper.js?v=1"></script>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
 <title>Buy Numbers — King Social Hub</title>
 <meta name="description" content="Rent a virtual number for SMS/OTP verification on King Social Hub."/>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap" rel="stylesheet"/>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%232f7bf6'/><text y='72' x='50' font-size='58' text-anchor='middle' fill='white' font-family='system-ui,sans-serif' font-weight='800'>K</text></svg>"/>
-<meta name="theme-color" content="#16a34a"/>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap" rel="stylesheet"/><meta name="theme-color" content="#16a34a"/>
 <!-- shared site stylesheet: loaded before this page's own <style> so page rules still win -->
 <link rel="stylesheet" href="style.css?v=20260910a"/>
 <link rel="stylesheet" href="/css/marketplace-standard.css?v=1"/>
@@ -21,7 +19,7 @@ function AMT(n)   { return window.KLSMoney ? window.KLSMoney.amount(n) : '₦' +
 
   (function(){
     try {
-      var pref = localStorage.getItem('ksl_theme');
+      var pref = 'dark';
       var effective = (pref === 'light' || pref === 'dark') ? pref : (function(){ var h = new Date().getHours(); return (h >= 19 || h < 7) ? 'dark' : 'light'; })();
       document.documentElement.setAttribute('data-theme', effective);
     } catch(e) {}
@@ -254,6 +252,13 @@ if (typeof window.kslConfirm !== 'function') {
   window.kslConfirm = function (m) { return Promise.resolve(window.confirm(m)); };
 }
 </script>
+  <link rel="icon" type="image/png" sizes="128x128" href="/favicon.png?v=k1">
+  <link rel="shortcut icon" href="/favicon.ico?v=k1">
+  <link rel="apple-touch-icon" href="/favicon.png?v=k1">
+  <link rel="stylesheet" href="/css/king-brand.css?v=1">
+  <script defer src="/js/king-brand.js?v=1"></script>
+  <link rel="stylesheet" href="/css/king-mobile-polish.css?v=1">
+  <link rel="stylesheet" href="/css/king-glass-ui.css?v=1">
 </head>
 <body>
 <!-- Shared UI icon sprite (replaces emoji site-wide) — referenced via <svg class="icon i-NAME"><use href="#i-NAME"/></svg> -->

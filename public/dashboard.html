@@ -11,14 +11,13 @@
   <link rel="stylesheet" href="/style.css?v=20260918"/>
   <link rel="stylesheet" href="/theme.css?v=20260918"/>
   <link rel="stylesheet" href="/brand.css"/>
-  <link rel="icon" href="/favicon.ico"/>
   <meta name="theme-color" content="#16a34a"/>
   <script>
     (function(){
       // Theme: follow the same saved preference / day-night clock as the rest of
       // the site — this page used to hard-force light mode, ignoring dark mode.
       try{
-        var pref = localStorage.getItem('ksl_theme');
+        var pref = 'dark';
         var effective = (pref === 'light' || pref === 'dark') ? pref : (function(){ var h = new Date().getHours(); return (h >= 19 || h < 7) ? 'dark' : 'light'; })();
         document.documentElement.setAttribute('data-theme', effective);
       }catch(e){}
@@ -180,6 +179,13 @@
     html[data-theme="dark"] { --bg:#08080f; --white:#131320; --text:#eeeef5; --text2:#8888a8; --text3:#55557a; --border:#252535; --blue-light:#182238; }
   </style>
 <script src="/js/kls-ui.js?v=1"></script>
+  <link rel="icon" type="image/png" sizes="128x128" href="/favicon.png?v=k1">
+  <link rel="shortcut icon" href="/favicon.ico?v=k1">
+  <link rel="apple-touch-icon" href="/favicon.png?v=k1">
+  <link rel="stylesheet" href="/css/king-brand.css?v=1">
+  <script defer src="/js/king-brand.js?v=1"></script>
+  <link rel="stylesheet" href="/css/king-mobile-polish.css?v=1">
+  <link rel="stylesheet" href="/css/king-glass-ui.css?v=1">
 </head>
 <body>
 <!-- SVG SPRITES -->
@@ -295,58 +301,19 @@
     </a>
   </section>
 
-  <!-- IMPORTANT / RESTOCK NOTIFICATIONS -->
-  <section class="dsh-card" id="dshAlertsCard" style="display:none">
-    <div class="dsh-card-head">
-      <div class="dsh-card-title">Important notifications</div>
-      <a class="dsh-card-link" href="/notifications">View all →</a>
-    </div>
-    <div class="dsh-alerts" id="dshAlerts"></div>
-  </section>
 
-  <!-- PRIMARY ACTIONS (OPay-style 3 buttons) -->
-  <div class="dsh-primary-actions">
-    <a class="dsh-action-btn" href="/deposit">
-      <div class="dsh-action-icon svc-blue"><svg><use href="#i-credit-card"/></svg></div>
-      Add Money
-    </a>
-    <a class="dsh-action-btn" href="/buy-number">
-      <div class="dsh-action-icon svc-indigo"><svg><use href="#i-smartphone"/></svg></div>
-      Buy Number
-    </a>
-    <a class="dsh-action-btn" href="/boost">
-      <div class="dsh-action-icon svc-violet"><svg><use href="#i-zap"/></svg></div>
-      Boost
-    </a>
-  </div>
-
-  <!-- TRUST STATS (compact — members / listings / verified / instant / visitors / active now) -->
-  <div class="dsh-card">
-    <div class="dsh-stats-grid" id="dshStats">
-      <div class="dsh-stat-cell"><div class="dsh-stat-num" id="dshStatMembers">—</div><div class="dsh-stat-label">Members</div></div>
-      <div class="dsh-stat-cell"><div class="dsh-stat-num" id="dshStatListings">—</div><div class="dsh-stat-label">Listings</div></div>
-      <div class="dsh-stat-cell"><div class="dsh-stat-num">100%</div><div class="dsh-stat-label">Verified</div></div>
-      <div class="dsh-stat-cell"><div class="dsh-stat-num"><svg><use href="#i-zap"/></svg></div><div class="dsh-stat-label">Instant</div></div>
-      <div class="dsh-stat-cell"><div class="dsh-stat-num" id="dshStatVisitors">—</div><div class="dsh-stat-label">Visitors</div></div>
-      <div class="dsh-stat-cell"><div class="dsh-stat-num" id="dshStatActive">—</div><div class="dsh-stat-label"><span class="dsh-stat-dot"></span>Active Now</div></div>
-    </div>
-  </div>
-
-  <!-- RECENT ACTIVITY -->
-  <div class="dsh-card">
-    <div class="dsh-card-head">
-      <div class="dsh-card-title">Recent Activity</div>
-      <a class="dsh-card-link" href="/transactions">See all →</a>
-    </div>
-    <div id="dshActivity"><div class="dsh-empty">Loading your latest activity…</div></div>
-  </div>
-
-  <!-- SERVICES GRID (all sidebar features) -->
-  <div class="dsh-card" style="margin-top:14px">
-    <div class="dsh-card-head">
-      <div class="dsh-card-title">Services</div>
-    </div>
-    <div class="dsh-services-grid">
+  <!-- FEATURES: 4-column grid right after the balance card -->
+  <div class="dsh-card dsh-features-card">
+    <div class="dsh-features-grid">
+      <a class="dsh-svc-item" href="/buy-number">
+        <div class="dsh-svc-icon svc-indigo"><svg><use href="#i-smartphone"/></svg></div>
+        <span class="dsh-svc-label">Buy Numbers</span>
+      </a>
+      <a class="dsh-svc-item" href="/boost">
+        <div class="dsh-svc-icon svc-violet"><svg><use href="#i-rocket"/></svg></div>
+        <span class="dsh-svc-label">Boost</span>
+        <span class="dsh-svc-badge">NEW</span>
+      </a>
       <a class="dsh-svc-item" href="/marketplace">
         <div class="dsh-svc-icon svc-blue"><svg><use href="#i-cart"/></svg></div>
         <span class="dsh-svc-label">Marketplace</span>
@@ -358,15 +325,6 @@
       <a class="dsh-svc-item" href="/marketplace3" aria-label="Marketplace Three — instant logs">
         <div class="dsh-svc-icon svc-violet"><svg><use href="#i-cart"/></svg></div>
         <span class="dsh-svc-label">Marketplace Three</span>
-      </a>
-      <a class="dsh-svc-item" href="/buy-number">
-        <div class="dsh-svc-icon svc-indigo"><svg><use href="#i-smartphone"/></svg></div>
-        <span class="dsh-svc-label">Buy Numbers</span>
-      </a>
-      <a class="dsh-svc-item" href="/boost">
-        <div class="dsh-svc-icon svc-violet"><svg><use href="#i-rocket"/></svg></div>
-        <span class="dsh-svc-label">Boost</span>
-        <span class="dsh-svc-badge">NEW</span>
       </a>
       <a class="dsh-svc-item" href="/tools">
         <div class="dsh-svc-icon svc-cyan"><svg><use href="#i-wrench"/></svg></div>
@@ -421,6 +379,36 @@
         <span class="dsh-svc-label">Settings</span>
       </a>
     </div>
+  </div>
+
+  <!-- IMPORTANT / RESTOCK NOTIFICATIONS -->
+  <section class="dsh-card" id="dshAlertsCard" style="display:none">
+    <div class="dsh-card-head">
+      <div class="dsh-card-title">Important notifications</div>
+      <a class="dsh-card-link" href="/notifications">View all →</a>
+    </div>
+    <div class="dsh-alerts" id="dshAlerts"></div>
+  </section>
+
+  <!-- TRUST STATS (compact — members / listings / verified / instant / visitors / active now) -->
+  <div class="dsh-card">
+    <div class="dsh-stats-grid" id="dshStats">
+      <div class="dsh-stat-cell"><div class="dsh-stat-num" id="dshStatMembers">—</div><div class="dsh-stat-label">Members</div></div>
+      <div class="dsh-stat-cell"><div class="dsh-stat-num" id="dshStatListings">—</div><div class="dsh-stat-label">Listings</div></div>
+      <div class="dsh-stat-cell"><div class="dsh-stat-num">100%</div><div class="dsh-stat-label">Verified</div></div>
+      <div class="dsh-stat-cell"><div class="dsh-stat-num"><svg><use href="#i-zap"/></svg></div><div class="dsh-stat-label">Instant</div></div>
+      <div class="dsh-stat-cell"><div class="dsh-stat-num" id="dshStatVisitors">—</div><div class="dsh-stat-label">Visitors</div></div>
+      <div class="dsh-stat-cell"><div class="dsh-stat-num" id="dshStatActive">—</div><div class="dsh-stat-label"><span class="dsh-stat-dot"></span>Active Now</div></div>
+    </div>
+  </div>
+
+  <!-- RECENT ACTIVITY -->
+  <div class="dsh-card">
+    <div class="dsh-card-head">
+      <div class="dsh-card-title">Recent Activity</div>
+      <a class="dsh-card-link" href="/transactions">See all →</a>
+    </div>
+    <div id="dshActivity"><div class="dsh-empty">Loading your latest activity…</div></div>
   </div>
 
   <!-- CONTACT & SUPPORT -->

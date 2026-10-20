@@ -920,9 +920,7 @@ function timeBasedTheme() {
   return (hour >= 19 || hour < 7) ? 'dark' : 'light'; // 7pm–7am = dark, 7am–7pm = light
 }
 function getThemePref() {
-  const saved = localStorage.getItem('ksl_theme');
-  if (saved === 'light' || saved === 'dark') return saved; // explicit manual choice — always respected
-  return timeBasedTheme(); // no explicit choice yet (or legacy 'system'/'off' values) — follow the clock
+  return 'dark'; // King Social Hub uses one dark look (matches the background artwork + glass cards)
 }
 function getEffectiveTheme(pref) { return pref === 'light' ? 'light' : 'dark'; }
 function applyTheme(pref) {
@@ -941,6 +939,7 @@ function applyTheme(pref) {
     : '<svg class="icon i-zap" aria-hidden="true"><use href="#i-zap"/></svg>'; // sun stand-in — reuses existing icon set
 }
 function toggleThemeSimple() {
+  return; // theme toggle disabled — single dark look
   const next = getThemePref() === 'light' ? 'dark' : 'light';
   localStorage.setItem('ksl_theme', next); // an explicit manual choice from here on — time-based auto-switching stops applying
   applyTheme(next);
