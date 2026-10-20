@@ -1,0 +1,5 @@
+KING SOCIAL HUB - Mizzysales-style redesign (King green colours)
+New files: public/css/king-brand.css, king-glass-ui.css, king-mobile-polish.css, public/js/king-brand.js
+Images: public/img/king-bg*.webp (backgrounds), king-icon.png (header badge), king-logo.png, public/favicon.png
+Every page links the 3 CSS files + king-brand.js (just before </head>). Dark look sitewide (theme toggle disabled).
+Dashboard: single 4-column feature grid under the balance card.

@@ -1,4 +1,23 @@
 require('dotenv').config();
+// ── SECURITY: refuse to boot with missing/weak critical secrets ─────────────
+(function assertSecrets() {
+  // Missing JWT_SECRET would break every login/token; refuse to boot instead of running insecurely.
+  if (!process.env.JWT_SECRET) { console.error('FATAL: JWT_SECRET is not set. Set it to a long random string (32+ chars).'); process.exit(1); }
+  if (process.env.JWT_SECRET.length < 32) console.warn('SECURITY WARNING: JWT_SECRET is shorter than 32 characters — replace it with a long random string.');
+  if (!process.env.ADMIN_PASSCODE) console.warn('SECURITY WARNING: ADMIN_PASSCODE is not set — admin endpoints are locked until you set it.');
+  else if (process.env.ADMIN_PASSCODE.length < 12) console.warn('SECURITY WARNING: ADMIN_PASSCODE is shorter than 12 characters — use a long random passcode.');
+  if ((process.env.FLW_CLIENT_ID || process.env.FLW_V3_SECRET_KEY) && !(process.env.FLW_SECRET_HASH || process.env.FLW_WEBHOOK_HASH)) {
+    console.error('SECURITY ERROR: Flutterwave is configured but FLW_SECRET_HASH is not set. Flutterwave webhooks are now REJECTED (deposits will not auto-credit) until you set FLW_SECRET_HASH to the same value as in the Flutterwave dashboard.');
+  }
+})();
+
+const _crypto = require('crypto');
+// Constant-time string compare (stops timing attacks on passcodes / webhook hashes)
+function safeEqual(a, b) {
+  const x = Buffer.from(String(a == null ? '' : a)), y = Buffer.from(String(b == null ? '' : b));
+  if (x.length !== y.length) { _crypto.timingSafeEqual(x, x); return false; }
+  return _crypto.timingSafeEqual(x, y);
+}
 // ── Site branding / look-and-feel lives in ONE file: site.config.js ─────────
 // Clone the project, edit site.config.js (or the BRAND_* vars in .env), and the
 // whole site renames, recolours and re-titles itself. No need to dig in here.
@@ -107,6 +126,13 @@ const registerLimiter = rateLimit({
  trustProxy: true
 });
 app.use('/api/auth/register', registerLimiter);
+// Brute-force protection for the admin passcode: 20 FAILED attempts / 15 min / IP (successful calls are not counted)
+const adminFailLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 40, standardHeaders: true, legacyHeaders: false,
+  skipSuccessfulRequests: true, skip: (req) => req.method === 'OPTIONS',
+  message: { error: 'Too many failed admin attempts. Try again later.' }, trustProxy: true
+});
+app.use('/api/admin', adminFailLimiter);
 const apiV1Limiter = rateLimit({
  windowMs: 60 * 1000,
  max: 60,
@@ -694,7 +720,7 @@ const NumberListing = mongoose.model('NumberListing', numberListingSchema);
 // ── GrizzlySMS Integration (Server 2) ────────────────────────────────────────
 // GrizzlySMS is sms-activate compatible: one endpoint, an `action` query param and
 // an `api_key`. Docs: https://grizzlysms.com/docs  (handler_api.php)
-const GRIZZLY_API_KEY = process.env.GRIZZLY_API_KEY || '5ef2d6daed2387b1d8a7fb374162d56b';
+const GRIZZLY_API_KEY = process.env.GRIZZLY_API_KEY || '';
 const GRIZZLY_BASE_URL = process.env.GRIZZLY_BASE_URL || 'https://api.grizzlysms.com/stubs/handler_api.php';
 const grizzlyAxios = axios.create({ timeout: 20000 });
 
@@ -1484,7 +1510,7 @@ const apiKeyAuth = async (req, res, next) => {
 };
 const adminAuth = (req, res, next) => {
  const p = req.headers['x-admin-passcode'];
- if (!p || p !== process.env.ADMIN_PASSCODE) return res.status(403).json({ error: 'Access denied' });
+ if (!p || !safeEqual(p, process.env.ADMIN_PASSCODE)) return res.status(403).json({ error: 'Access denied' });
  req.adminRole = 'super';
  next();
 };
@@ -1502,7 +1528,7 @@ const subAdminAuth = async (req, res, next) => {
 };
 const anyAdminAuth = async (req, res, next) => {
  const p = req.headers['x-admin-passcode'];
- if (p && p === process.env.ADMIN_PASSCODE) { req.adminRole = 'super'; return next(); }
+ if (p && safeEqual(p, process.env.ADMIN_PASSCODE)) { req.adminRole = 'super'; return next(); }
  return subAdminAuth(req, res, next);
 };
 // Marketplace 2 (NovaSolution API) + marketplace on/off switches — see lib/market2.js
@@ -1762,8 +1788,7 @@ async function creditReferralCommission(buyer, purchaseAmount, itemLabel) {
  if (!referrer || referrer.restricted) return; // never pay out commission to a restricted account
  const commission = Math.round(purchaseAmount * REFERRAL_COMMISSION_RATE * 100) / 100;
  if (commission <= 0) return;
- referrer.balance = (referrer.balance || 0) + commission;
- await referrer.save();
+ await User.updateOne({ _id: referrer._id }, { $inc: { balance: commission } });
  await ReferralEarning.create({
  referrerId: referrer._id, referredUserId: buyer._id,
  purchaseAmount, commission, itemLabel
@@ -1798,11 +1823,11 @@ const MAX_ACCOUNTS_PER_PERSON = Math.max(1, Number(process.env.MAX_ACCOUNTS_PER_
 function deviceFingerprint(req) {
   const ua = String(req.headers['user-agent'] || '');
   const lang = String(req.headers['accept-language'] || '');
-  const ip = (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').toString().split(',')[0].trim();
+  const ip = (req.ip || req.socket?.remoteAddress || '').toString();
   return crypto.createHash('sha256').update(ip + '|' + ua + '|' + lang).digest('hex').slice(0, 32);
 }
 async function accountLimitReached(req) {
-  const ip = (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').toString().split(',')[0].trim();
+  const ip = (req.ip || req.socket?.remoteAddress || '').toString();
   const fp = deviceFingerprint(req);
   const or = [];
   if (ip) or.push({ signupIp: ip });
@@ -1826,7 +1851,7 @@ app.post('/api/auth/register', async (req, res) => {
  const gameId = await generateUniqueGameId();
  const referralCode = await generateUniqueReferralCode();
  const referrer = refCode ? await User.findOne({ referralCode: String(refCode).toUpperCase() }) : null;
- const signupIp = (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').toString().split(',')[0].trim();
+ const signupIp = (req.ip || req.socket?.remoteAddress || '').toString();
  // Worldwide phone handling: the client sends the chosen country plus the local
  // number; countries.normalizePhone turns that into a validated E.164 number.
  const countriesLib = require('./lib/countries');
@@ -1860,7 +1885,7 @@ app.post('/api/auth/login', async (req, res) => {
  if (!user.password) return res.status(400).json({ error: 'This account signed up with Google. Please use "Continue with Google" to log in.' });
  if (!(await bcrypt.compare(password, user.password))) return res.status(400).json({ error: 'Invalid email or password' });
  if (user.restricted) return res.status(403).json({ error: `Your account has been restricted${user.restrictedReason ? ': ' + user.restrictedReason : ''}. Contact support for help.`, restricted: true });
- const ip = (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').toString().split(',')[0].trim();
+ const ip = (req.ip || req.socket?.remoteAddress || '').toString();
  const userAgent = req.headers['user-agent'] || '';
  user.lastLoginAt = new Date();
  user.lastLoginIp = ip;
@@ -1875,6 +1900,7 @@ app.post('/api/auth/login', async (req, res) => {
 async function upsertGoogleUser(payload, agreedTerms, refCode, req) {
  let user = await User.findOne({ $or: [{ googleId: payload.sub }, { email: payload.email.toLowerCase() }] });
  let isNewUser = false;
+ if (payload.email_verified === false) { const err = new Error('Your Google email address is not verified.'); err.blockedDomain = true; throw err; }
  if (user) {
  if (!user.googleId) { user.googleId = payload.sub; user.authProvider = user.authProvider === 'local' && user.password ? 'local' : 'google'; }
  if (!user.profilePicture && payload.picture) user.profilePicture = payload.picture;
@@ -1887,7 +1913,7 @@ async function upsertGoogleUser(payload, agreedTerms, refCode, req) {
  if (capError) { const err = new Error(capError); err.accountLimit = true; throw err; }
  }
  const referrer = refCode ? await User.findOne({ referralCode: String(refCode).toUpperCase() }) : null;
- const signupIp = req ? (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').toString().split(',')[0].trim() : '';
+ const signupIp = req ? (req.ip || req.socket?.remoteAddress || '').toString() : '';
  user = new User({
  name: payload.name || payload.email.split('@')[0],
  email: payload.email.toLowerCase(),
@@ -1906,7 +1932,7 @@ async function upsertGoogleUser(payload, agreedTerms, refCode, req) {
  return { user, isNewUser };
 }
 async function finalizeGoogleLogin(user, req) {
- const ip = (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').toString().split(',')[0].trim();
+ const ip = (req.ip || req.socket?.remoteAddress || '').toString();
  const userAgent = req.headers['user-agent'] || '';
  user.lastLoginAt = new Date();
  user.lastLoginIp = ip;
@@ -2579,12 +2605,12 @@ app.post('/api/logs/buy/:id', auth, async (req, res) => {
      return res.status(400).json({ error: 'Insufficient balance. Please deposit funds.' });
    }
    // ATOMIC DEDUCT — never read-modify-write; concurrent ops are safe
-   const updatedUser = await User.findByIdAndUpdate(
-     user._id, { $inc: { balance: -sub.price } }, { new: true }
+   const updatedUser = await User.findOneAndUpdate(
+     { _id: user._id, balance: { $gte: sub.price } }, { $inc: { balance: -sub.price } }, { new: true }
    );
    if (!updatedUser) {
      await Log.updateOne({ _id: log._id, 'subAccounts._id': subAccountId }, { $set: { 'subAccounts.$.sold': false, 'subAccounts.$.soldTo': null, 'subAccounts.$.soldAt': null } });
-     return res.status(500).json({ error: 'Failed to deduct balance — please try again' });
+     return res.status(400).json({ error: 'Insufficient balance. Please deposit funds.' });
    }
    // Push purchase record atomically — never overwrites other purchaseDetails
    const purchasedAt = new Date();
@@ -2625,20 +2651,33 @@ app.post('/api/logs/buy/:id', auth, async (req, res) => {
    return res.status(400).json({ error: 'This tool is out of stock.' });
  if ((user.balance || 0) < log.price)
    return res.status(400).json({ error: 'Insufficient balance. Please deposit funds.' });
- // Atomic deduct
- const updatedUser = await User.findByIdAndUpdate(
-   user._id, { $inc: { balance: -log.price } }, { new: true }
+ if (!(Number(log.price) >= 0)) return res.status(400).json({ error: 'Invalid item price' });
+ // SECURITY: atomic stock claim (no overselling) + atomic wallet debit AND purchase record in ONE operation:
+ // the balance can never go negative and a single "log" cannot be bought twice by parallel requests.
+ const stockField = log.type === 'tool' ? 'toolQty' : 'maxPurchases';
+ const stockClaim = await Log.findOneAndUpdate(
+   { _id: log._id, $expr: { $or: [ { $lte: [ { $ifNull: ['$' + stockField, 0] }, 0 ] }, { $lt: [ { $ifNull: ['$soldCount', 0] }, '$' + stockField ] } ] } },
+   { $inc: { soldCount: 1 } }, { new: true }
  );
- await User.updateOne({ _id: user._id }, { $push: { purchaseDetails: {
+ if (!stockClaim) return res.status(400).json({ error: 'This item is sold out.' });
+ const dedupe = log.type === 'log' ? { 'purchaseDetails.logId': { $ne: log._id } } : {};
+ const updatedUser = await User.findOneAndUpdate(
+   { _id: user._id, balance: { $gte: log.price }, ...dedupe },
+   { $inc: { balance: -log.price }, $push: { purchaseDetails: {
    logId: log._id, logTitle: log.title, logType: log.type, logDetails: log.details || '',
    toolLink: log.toolLink || '', deliveryType: log.deliveryType || 'link',
    deliverableFile: log.deliverableFile || '', deliverableFileName: log.deliverableFileName || '',
    pricePaid: log.price, purchasedAt: new Date()
- }}});
+ } } },
+   { new: true }
+ );
+ if (!updatedUser) {
+   await Log.updateOne({ _id: log._id }, { $inc: { soldCount: -1 } });
+   return res.status(400).json({ error: 'Insufficient balance (or you already purchased this account). Please deposit funds.' });
+ }
  await Transaction.create({ userId: user._id, type: 'purchase', amount: log.price, description: `Purchased: ${log.title}`, status: 'success' });
  await creditReferralCommission(updatedUser, log.price, log.title);
  checkAndAwardBadges(user._id).catch(() => {});
- await Log.findByIdAndUpdate(log._id, { $inc: { soldCount: 1 } });
 
  // ── Send purchase confirmation email ──────────────────────
  try {
@@ -2702,18 +2741,24 @@ app.post('/api/logs/buy-multi/:id', auth, async (req, res) => {
       }
       return res.status(400).json({ error: 'Insufficient balance for this batch. Please deposit funds.' });
     }
-    user.balance = (user.balance || 0) - total;
-    const purchasedItems = [];
-    for (const sub of claimedSubs) {
-      user.purchaseDetails.push({
-        logId: log._id, logTitle: `${log.title} — ${sub.label}`, logType: log.type, logDetails: sub.details || '',
-        toolLink: sub.toolLink || '', deliveryType: sub.deliveryType || 'link',
-        deliverableFile: sub.deliverableFile || '', deliverableFileName: sub.deliverableFileName || '',
-        pricePaid: sub.price, subAccountId: sub._id
-      });
-    }
-    await user.save();
-    const newRecords = user.purchaseDetails.slice(-claimedSubs.length);
+    const _docs = claimedSubs.map(sub => ({
+ logId: log._id, logTitle: `${log.title} — ${sub.label}`, logType: log.type, logDetails: sub.details || '',
+ toolLink: sub.toolLink || '', deliveryType: sub.deliveryType || 'link',
+ deliverableFile: sub.deliverableFile || '', deliverableFileName: sub.deliverableFileName || '',
+ pricePaid: sub.price, subAccountId: sub._id
+ }));
+ // SECURITY: atomic conditional debit + purchase records in one write (no double-spend, no negative balance)
+ const _debited = await User.findOneAndUpdate(
+ { _id: user._id, balance: { $gte: total } },
+ { $inc: { balance: -total }, $push: { purchaseDetails: { $each: _docs } } }, { new: true }
+ );
+ if (!_debited) {
+ for (const rid of claimedIds) await Log.updateOne({ _id: log._id, 'subAccounts._id': rid }, { $set: { 'subAccounts.$.sold': false, 'subAccounts.$.soldTo': null, 'subAccounts.$.soldAt': null } });
+ return res.status(400).json({ error: 'Insufficient balance for this batch. Please deposit funds.' });
+ }
+ user.balance = _debited.balance; user.purchaseDetails = _debited.purchaseDetails;
+ const purchasedItems = [];
+ const newRecords = _debited.purchaseDetails.slice(-claimedSubs.length);
     newRecords.forEach((rec, i) => {
       purchasedItems.push({
         logDetails: rec.logDetails, toolLink: rec.toolLink, deliveryType: rec.deliveryType,
@@ -2961,21 +3006,12 @@ async function flwHeaders() {
 async function handleFlutterwaveWebhook(req, res) {
  const receivedHash = req.headers['verif-hash'];
  const expectedHash = process.env.FLW_SECRET_HASH || process.env.FLW_WEBHOOK_HASH || '';
- console.log(' KLS webhook received:');
- console.log(' verif-hash header :', receivedHash || '(MISSING)');
- console.log(' expected hash :', expectedHash ? expectedHash.slice(0, 6) + '***' : '(NOT SET IN ENV)');
- console.log(' match? :', receivedHash && expectedHash && receivedHash === expectedHash ? 'YES ' : 'NO ');
- console.log(' raw headers :', JSON.stringify(req.headers).slice(0, 300));
- if (expectedHash && receivedHash !== expectedHash) {
- console.error(' KLS webhook REJECTED: signature mismatch.');
- console.error(' Got :', receivedHash);
- console.error(' Expected:', expectedHash);
- console.error(' Fix: set FLW_SECRET_HASH in your Render/env vars to match your Flutterwave Webhook Secret Hash');
- if (klsPlatform) await klsPlatform.logWebhook({ channel: 'charge', status: 'signature_rejected', message: 'verif-hash mismatch', payload: req.body });
+ console.log(' KLS webhook received (signature present:', !!receivedHash, ')');
+ // SECURITY: a webhook is ONLY accepted when FLW_SECRET_HASH is configured AND matches (constant-time).
+ if (!expectedHash || !safeEqual(receivedHash, expectedHash)) {
+ console.error(' KLS webhook REJECTED:', !expectedHash ? 'FLW_SECRET_HASH is not configured on the server' : 'signature mismatch');
+ if (klsPlatform) await klsPlatform.logWebhook({ channel: 'charge', status: 'signature_rejected', message: !expectedHash ? 'FLW_SECRET_HASH not configured' : 'verif-hash mismatch', payload: {} });
  return res.status(401).json({ error: 'Invalid webhook signature' });
- }
- if (!expectedHash) {
- console.warn(' KLS webhook: FLW_SECRET_HASH not set — processing anyway (set it in env vars for security)');
  }
  const event = req.body;
  const tx = event.data || {};
@@ -3094,6 +3130,9 @@ async function handleFlutterwaveWebhook(req, res) {
  const btDeposit = await BankTransferDeposit.findOne({ reference: txRefAny, status: 'pending' });
  if (btDeposit) {
  console.log(` Matched BankTransferDeposit ref=${txRefAny} — crediting via webhook`);
+ if (await Transaction.exists({ txRef: chargeKey(tx) })) { await markWebhook('duplicate', 'charge already credited'); return; }
+ const btConfirmed = await flwConfirmCharge(tx, { expectedRef: btDeposit.reference, minAmount: btDeposit.amount * 0.99, currency: 'NGN' });
+ if (!btConfirmed) { await markWebhook('failed', 'bank transfer failed server-side verification'); return; }
  const freshBT = await BankTransferDeposit.findOneAndUpdate(
  { _id: btDeposit._id, status: 'pending' },
  { status: 'success', flwChargeId: String(tx.flw_ref || tx.id || '') },
@@ -3155,7 +3194,7 @@ async function handleFlutterwaveWebhook(req, res) {
  if (nameSlug.length >= 3) {
  user = await User.findOne({
  'virtualAccount.enabled': true,
- name: { $regex: new RegExp(nameSlug, 'i') }
+ name: { $regex: new RegExp('^' + nameSlug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i') }
  });
  if (user) console.log('KLS webhook: matched user by narration slug:', nameSlug, '', user.name);
  }
@@ -3196,6 +3235,25 @@ app.post('/api/deposit/paymentlink/callback', express.json(), handleFlutterwaveW
 // guarantees to be identical on every delivery / API read of the same charge;
 // flw_ref alone changed shape between retries and channels, which is how the
 // same money could be recorded twice under two different keys.
+// SECURITY: never trust a webhook body alone. Confirm the charge with Flutterwave's API.
+// Returns the verified charge, or null if it is not a matching successful payment.
+// THROWS if Flutterwave cannot be reached so the webhook answers 500 and Flutterwave retries (fail-closed).
+async function flwConfirmCharge(tx, { expectedRef, minAmount, currency }) {
+ let vtx = null;
+ if (tx && tx.id) {
+  const r = await flwAxios.get(`/transactions/${encodeURIComponent(tx.id)}/verify`, { timeout: 10000 });
+  vtx = r.data && r.data.data;
+ } else if (expectedRef) {
+  const r = await flwAxios.get('/transactions/verify_by_reference', { params: { tx_ref: expectedRef }, timeout: 10000 });
+  vtx = r.data && r.data.data;
+ }
+ if (!vtx) return null;
+ const ok = String(vtx.status || '').trim().toLowerCase() === 'successful'
+  && String(vtx.currency || '').trim().toUpperCase() === String(currency || 'NGN').toUpperCase()
+  && Number(vtx.amount) >= Number(minAmount || 0)
+  && (!expectedRef || String(vtx.tx_ref || vtx.reference || '') === String(expectedRef));
+ return ok ? vtx : null;
+}
 function chargeKey(tx) {
  return String(tx.id || tx.flw_ref || tx.tx_ref || tx.reference || '');
 }
@@ -3254,18 +3312,22 @@ async function handleVaWebhookCredit(user, tx) {
  if (!claimedNew) { console.log(` DUPLICATE ${flwRef} for ${user.email} — already recorded, skipping`); return { status: 'duplicate' }; }
 
  // ── INDEPENDENT VERIFICATION ───────────────────────────────────────────────
- let verified = true;
+ let verified = false;
  try {
-  const vRes = await flwAxios.get(`/transactions/${tx.id}/verify`, { timeout: 8000 });
+  const vRes = await flwAxios.get(`/transactions/${encodeURIComponent(tx.id)}/verify`, { timeout: 8000 });
   const vtx = vRes.data?.data;
   if (vtx) {
    verified = String(vtx.status || '').trim().toLowerCase() === 'successful' && String(vtx.currency || '').trim().toUpperCase() === 'NGN' && Number(vtx.amount) >= receivedAmount * 0.99;
    console.log(` verify: status=${vtx.status} currency=${vtx.currency} amount=${vtx.amount} → ${verified}`);
   } else {
-   console.warn(' Verify returned no data — trusting the signed webhook');
+   verified = false;
+   console.warn(' Verify returned no data — NOT crediting');
   }
  } catch (ve) {
-  console.warn(` Verify API unavailable (${ve.message}) — trusting the signed webhook`);
+  // fail CLOSED: release the claim and let Flutterwave retry the webhook later
+  if (claimId) await VirtualAccountDeposit.deleteOne({ _id: claimId, status: 'pending' }).catch(() => {});
+  console.warn(` Verify API unavailable (${ve.message}) — NOT crediting, webhook will be retried`);
+  throw new Error('verification unavailable');
  }
  if (!verified) {
   // Release the claim so a later legitimate delivery can still be credited.
@@ -3319,7 +3381,9 @@ async function handlePaymentLinkWebhookCredit(deposit, tx) {
  console.warn(`Payment link webhook: amount mismatch for ${deposit.txRef} — expected ≥${expectedCurrency} ${deposit.amount}, got ${tx.amount}`);
  return;
  }
- await creditPaymentLinkDeposit(deposit, tx);
+ const confirmedTx = await flwConfirmCharge(tx, { expectedRef: deposit.txRef, minAmount: deposit.amount * 0.98, currency: expectedCurrency });
+ if (!confirmedTx) { console.warn(`Payment link webhook: ${deposit.txRef} FAILED server-side verification — not credited`); return; }
+ await creditPaymentLinkDeposit(deposit, confirmedTx);
  console.log(` Payment link deposit credited via webhook: ₦${deposit.creditAmount} for tx_ref ${deposit.txRef}`);
 }
 const FLW_PROXY_URL = process.env.FLW_PROXY_URL || '';
@@ -4378,7 +4442,7 @@ app.get('/api/deposit/banktransfer/status/:reference', auth, async (req, res) =>
  });
  // Guard: if that charge was already credited as a permanent-VA deposit,
  // crediting it here as a bank transfer would pay the same money twice.
- if (match && await VirtualAccountDeposit.findOne({ flwRef: chargeKey(match) }).select('_id')) {
+ if (match && (await VirtualAccountDeposit.findOne({ flwRef: chargeKey(match) }).select('_id') || await Transaction.exists({ txRef: chargeKey(match) }))) {
  console.log('BT poll: charge already credited as a VA deposit — ignoring');
  return res.json({ status: 'pending' });
  }
@@ -4398,6 +4462,7 @@ app.get('/api/deposit/banktransfer/status/:reference', auth, async (req, res) =>
  await Transaction.create({
  userId: fresh.userId,
  type: 'deposit',
+ txRef: chargeKey(match),
  amount: fresh.creditAmount,
  description: `VA bank transfer deposit — ₦${fresh.creditAmount.toLocaleString('en-NG')} credited (₦${fresh.amount.toLocaleString('en-NG')} received, ₦${fresh.fee} fee) via ${fresh.bankName || 'bank transfer'}`,
  status: 'success'
@@ -4535,8 +4600,8 @@ async function sendWhatsAppNotification(user, amount, bank, accountName, receipt
  });
  return { sent: false, error: msg };
  }
- const approveLink = `${siteUrl}/api/admin/receipts/${receiptId}/quick-action?action=approved&passcode=${encodeURIComponent(passcode)}`;
- const rejectLink = `${siteUrl}/api/admin/receipts/${receiptId}/quick-action?action=rejected&passcode=${encodeURIComponent(passcode)}`;
+ const approveLink = `${siteUrl}/${adminPath}`; // SECURITY: never put the admin passcode in a link
+ const rejectLink = approveLink;
  const aiSummary = aiResult
  ? ` AI: ${aiResult.verdict.toUpperCase()} (${aiResult.confidence}%)\n Reason: ${aiResult.reason}${aiResult.flags?.length ? '\n Flags: ' + aiResult.flags.join(', ') : ''}\n\n`
  : '';
@@ -4577,52 +4642,10 @@ async function sendWhatsAppNotification(user, amount, bank, accountName, receipt
  return { sent: false, error: detail };
  }
 }
-app.get('/api/admin/receipts/:id/quick-action', async (req, res) => {
- try {
- const { action, passcode } = req.query;
- if (!passcode || passcode !== process.env.ADMIN_PASSCODE)
- return res.status(403).send(`<h2> Wrong passcode. Access denied.</h2>`);
- if (!['approved', 'rejected'].includes(action))
- return res.status(400).send(`<h2>Invalid action.</h2>`);
- const receipt = await Receipt.findById(req.params.id);
- if (!receipt) return res.status(404).send(`<h2>Receipt not found.</h2>`);
- if (receipt.status !== 'pending')
- return res.send(`<h2> Already ${receipt.status}. No action needed.</h2>`);
- receipt.status = action;
- receipt.adminNote = `Quick-${action} via WhatsApp link`;
- await receipt.save();
- if (action === 'approved') {
- const user = await User.findById(receipt.userId);
- if (user) {
- user.balance = (user.balance || 0) + receipt.claimedAmount;
- await user.save();
- await Transaction.create({
- userId: user._id,
- type: 'deposit',
- amount: receipt.claimedAmount,
- description: `Deposit approved via WhatsApp quick-action (${receipt.claimedBank})`,
- status: 'success'
- });
- }
- return res.send(`
- <html><body style="font-family:sans-serif;text-align:center;padding:40px;background:#0a0a0a;color:#ffd700;">
- <h1> APPROVED</h1>
- <p style="color:#fff;">₦${receipt.claimedAmount.toLocaleString('en-NG')} credited to <b>${receipt.userName}</b> (${receipt.userEmail})</p>
- <p style="color:#aaa;">You can close this tab.</p>
- </body></html>
- `);
- } else {
- return res.send(`
- <html><body style="font-family:sans-serif;text-align:center;padding:40px;background:#0a0a0a;color:#ff4444;">
- <h1> REJECTED</h1>
- <p style="color:#fff;">Deposit from <b>${receipt.userName}</b> has been rejected.</p>
- <p style="color:#aaa;">You can close this tab.</p>
- </body></html>
- `);
- }
- } catch (e) {
- res.status(500).send(`<h2>Error: ${e.message}</h2>`);
- }
+app.get('/api/admin/receipts/:id/quick-action', (req, res) => {
+ // SECURITY: disabled. A state-changing GET carrying the master admin passcode in the URL leaks the
+ // passcode (logs, WhatsApp, link-preview bots) and can be fired by crawlers. Use the admin panel.
+ res.status(410).send('<h2>This one-click link has been retired for security. Please approve or reject receipts from the admin panel.</h2>');
 });
 app.post('/api/visit', async (req, res) => {
  try {
@@ -4951,15 +4974,19 @@ app.post('/api/v1/buy/:id', apiKeyAuth, async (req, res) => {
  await Log.updateOne({ _id: log._id, 'subAccounts._id': targetId }, { $set: { 'subAccounts.$.sold': false, 'subAccounts.$.soldTo': null, 'subAccounts.$.soldAt': null } });
  return res.status(400).json({ error: `Insufficient balance — this account costs ₦${sub.price}` });
  }
- user.balance = (user.balance || 0) - sub.price;
- user.purchaseDetails.push({
+ const _subDoc = {
  logId: log._id, logTitle: `${log.title} — ${sub.label}`, logType: log.type, logDetails: sub.details || '',
  toolLink: sub.toolLink || '', deliveryType: sub.deliveryType || 'link',
  deliverableFile: sub.deliverableFile || '', deliverableFileName: sub.deliverableFileName || '',
  pricePaid: sub.price, subAccountId: sub._id
- });
- await user.save();
- const purchaseRecord = user.purchaseDetails[user.purchaseDetails.length - 1];
+ };
+ const _deb = await User.findOneAndUpdate({ _id: user._id, balance: { $gte: sub.price } }, { $inc: { balance: -sub.price }, $push: { purchaseDetails: _subDoc } }, { new: true });
+ if (!_deb) {
+ await Log.updateOne({ _id: log._id, 'subAccounts._id': targetId }, { $set: { 'subAccounts.$.sold': false, 'subAccounts.$.soldTo': null, 'subAccounts.$.soldAt': null } });
+ return res.status(400).json({ error: `Insufficient balance — this account costs ₦${sub.price}` });
+ }
+ user.balance = _deb.balance; user.purchaseDetails = _deb.purchaseDetails;
+ const purchaseRecord = _deb.purchaseDetails[_deb.purchaseDetails.length - 1];
  await Transaction.create({ userId: user._id, type: 'purchase', amount: sub.price, description: `Purchased via API: ${log.title} — ${sub.label}`, status: 'success' });
  await creditReferralCommission(user, sub.price, `${log.title} — ${sub.label}`);
  checkAndAwardBadges(user._id).catch(() => {});
@@ -4975,21 +5002,26 @@ app.post('/api/v1/buy/:id', apiKeyAuth, async (req, res) => {
  } else if (log.toolQty > 0 && log.soldCount >= log.toolQty) {
  return res.status(400).json({ error: 'Out of stock' });
  }
- if ((user.balance || 0) < log.price) return res.status(400).json({ error: `Insufficient balance — this item costs ₦${log.price}` });
- user.balance = (user.balance || 0) - log.price;
- user.purchaseDetails.push({
+ if (!(Number(log.price) >= 0)) return res.status(400).json({ error: 'Invalid item price' });
+ const _sf = log.type === 'tool' ? 'toolQty' : 'maxPurchases';
+ const _claim = await Log.findOneAndUpdate(
+ { _id: log._id, $expr: { $or: [ { $lte: [ { $ifNull: ['$' + _sf, 0] }, 0 ] }, { $lt: [ { $ifNull: ['$soldCount', 0] }, '$' + _sf ] } ] } },
+ { $inc: { soldCount: 1 } }, { new: true });
+ if (!_claim) return res.status(400).json({ error: 'Sold out' });
+ const _deb = await User.findOneAndUpdate({ _id: user._id, balance: { $gte: log.price } }, { $inc: { balance: -log.price }, $push: { purchaseDetails: {
  logId: log._id, logTitle: log.title, logType: log.type, logDetails: log.details || '',
  toolLink: log.toolLink || '', deliveryType: log.deliveryType || 'link',
  deliverableFile: log.deliverableFile || '', deliverableFileName: log.deliverableFileName || '',
- pricePaid: log.price
- });
- await user.save();
- const purchaseRecord = user.purchaseDetails[user.purchaseDetails.length - 1];
+ pricePaid: log.price } } }, { new: true });
+ if (!_deb) {
+ await Log.updateOne({ _id: log._id }, { $inc: { soldCount: -1 } });
+ return res.status(400).json({ error: `Insufficient balance — this item costs ₦${log.price}` });
+ }
+ user.balance = _deb.balance; user.purchaseDetails = _deb.purchaseDetails;
+ const purchaseRecord = _deb.purchaseDetails[_deb.purchaseDetails.length - 1];
  await Transaction.create({ userId: user._id, type: 'purchase', amount: log.price, description: `Purchased via API: ${log.title}`, status: 'success' });
  await creditReferralCommission(user, log.price, log.title);
  checkAndAwardBadges(user._id).catch(() => {});
- log.soldCount += 1;
- await log.save();
  res.json({
  message: 'Purchase successful', newBalance: user.balance, purchaseId: purchaseRecord._id, purchasedAt: purchaseRecord.purchasedAt,
  itemPrice: log.price, totalCharged: log.price,
@@ -5028,17 +5060,23 @@ app.post('/api/v1/buy-multi/:id', apiKeyAuth, async (req, res) => {
  for (const rid of claimedIds) await Log.updateOne({ _id: log._id, 'subAccounts._id': rid }, { $set: { 'subAccounts.$.sold': false, 'subAccounts.$.soldTo': null, 'subAccounts.$.soldAt': null } });
  return res.status(400).json({ error: `Insufficient balance — this batch costs ₦${total}` });
  }
- user.balance = (user.balance || 0) - total;
- for (const sub of claimedSubs) {
- user.purchaseDetails.push({
+ const _docs = claimedSubs.map(sub => ({
  logId: log._id, logTitle: `${log.title} — ${sub.label}`, logType: log.type, logDetails: sub.details || '',
  toolLink: sub.toolLink || '', deliveryType: sub.deliveryType || 'link',
  deliverableFile: sub.deliverableFile || '', deliverableFileName: sub.deliverableFileName || '',
  pricePaid: sub.price, subAccountId: sub._id
- });
+ }));
+ // SECURITY: atomic conditional debit + purchase records in one write (no double-spend, no negative balance)
+ const _debited = await User.findOneAndUpdate(
+ { _id: user._id, balance: { $gte: total } },
+ { $inc: { balance: -total }, $push: { purchaseDetails: { $each: _docs } } }, { new: true }
+ );
+ if (!_debited) {
+ for (const rid of claimedIds) await Log.updateOne({ _id: log._id, 'subAccounts._id': rid }, { $set: { 'subAccounts.$.sold': false, 'subAccounts.$.soldTo': null, 'subAccounts.$.soldAt': null } });
+ return res.status(400).json({ error: 'Insufficient balance for this batch. Please deposit funds.' });
  }
- await user.save();
- const newRecords = user.purchaseDetails.slice(-claimedSubs.length);
+ user.balance = _debited.balance; user.purchaseDetails = _debited.purchaseDetails;
+ const newRecords = _debited.purchaseDetails.slice(-claimedSubs.length);
  await Transaction.create({ userId: user._id, type: 'purchase', amount: total, description: `Purchased ${claimedSubs.length} accounts via API: ${log.title}`, status: 'success' });
  for (const sub of claimedSubs) await creditReferralCommission(user, sub.price, `${log.title} — ${sub.label}`);
  checkAndAwardBadges(user._id).catch(() => {});
@@ -5451,7 +5489,7 @@ app.post('/api/support/ai-chat', auth, async (req, res) => {
  } catch (e) { res.status(500).json({ error: 'Failed to get a reply — please try again.' }); }
 });
 app.post('/api/admin/verify', (req, res) => {
- req.body.passcode === process.env.ADMIN_PASSCODE ? res.json({ success: true }) : res.status(403).json({ error: 'Wrong passcode' });
+ safeEqual(req.body && req.body.passcode, process.env.ADMIN_PASSCODE) ? res.json({ success: true }) : res.status(403).json({ error: 'Wrong passcode' });
 });
 app.get('/api/admin/restock-requests', anyAdminAuth, async (req, res) => {
  try {
@@ -5886,8 +5924,8 @@ app.post('/api/admin/weekly-top-buyer/pay', adminAuth, async (req, res) => {
  const rewardAmount = parseFloat(amount) || 50;
  const { start, end } = getWeekBounds(new Date(weekKey + 'T00:00:00.000Z'));
  const purchaseCount = await Transaction.countDocuments({ userId, type: 'purchase', status: 'success', createdAt: { $gte: start, $lt: end } });
- user.balance = (user.balance || 0) + rewardAmount;
- await user.save();
+ await User.updateOne({ _id: user._id }, { $inc: { balance: rewardAmount } });
+ user.balance = (user.balance || 0) + rewardAmount; // (display value only)
  await Transaction.create({ userId: user._id, type: 'admin_credit', amount: rewardAmount, description: ` Weekly top buyer reward (week of ${weekKey})`, status: 'success' });
  await WeeklyReward.create({ weekKey, winnerId: user._id, winnerName: user.name, purchaseCount, amount: rewardAmount });
  res.json({ success: true, message: ` Awarded ₦${rewardAmount} to ${user.name} for week of ${weekKey}!`, newBalance: user.balance });
@@ -5988,18 +6026,15 @@ app.get('/api/admin/receipts/all', anyAdminAuth, async (req, res) => {
 app.post('/api/admin/receipts/:id/action', anyAdminAuth, async (req, res) => {
  try {
  const { action, note } = req.body;
- const receipt = await Receipt.findById(req.params.id);
- if (!receipt) return res.status(404).json({ error: 'Receipt not found' });
- if (receipt.status !== 'pending') return res.status(400).json({ error: 'Receipt already processed' });
- receipt.status = action;
- receipt.adminNote = note || '';
- receipt.seenByUser = false;
- await receipt.save();
+ if (!['approved', 'rejected'].includes(action)) return res.status(400).json({ error: 'Invalid action' });
+ // atomic claim: only ONE request can move a receipt out of "pending" (stops double-credit on double-click / replay)
+ const receipt = await Receipt.findOneAndUpdate({ _id: req.params.id, status: 'pending' }, { $set: { status: action, adminNote: note || '', seenByUser: false } }, { new: true });
+ if (!receipt) return res.status(400).json({ error: 'Receipt not found or already processed' });
  if (action === 'approved') {
- const user = await User.findById(receipt.userId);
+ const amt = Number(receipt.claimedAmount);
+ if (!Number.isFinite(amt) || amt <= 0) return res.status(400).json({ error: 'Invalid receipt amount' });
+ const user = await User.findByIdAndUpdate(receipt.userId, { $inc: { balance: amt } }, { new: true });
  if (user) {
- user.balance = (user.balance || 0) + receipt.claimedAmount;
- await user.save();
  await Transaction.create({ userId: user._id, type: 'deposit', amount: receipt.claimedAmount, description: `Manual deposit approved by admin via ${receipt.claimedBank}`, status: 'success' });
  }
  }
@@ -7329,8 +7364,10 @@ app.post('/api/numbers/server2/buy', auth, async (req, res) => {
  }
  const { price: chargeAmount, costNgn } = grizzlyPriceNgn(maxPrice, cfg);
 
- const user = await User.findById(req.user._id);
- if ((user.balance || 0) < chargeAmount) return res.status(400).json({ error: 'Insufficient balance. Please deposit funds.' });
+ // SECURITY: atomic debit BEFORE calling the provider so parallel requests cannot get several numbers for one balance
+ const user = await User.findOneAndUpdate({ _id: req.user._id, balance: { $gte: chargeAmount } }, { $inc: { balance: -chargeAmount } }, { new: true });
+ if (!user) return res.status(400).json({ error: 'Insufficient balance. Please deposit funds.' });
+ const _refundS2 = () => User.updateOne({ _id: user._id }, { $inc: { balance: chargeAmount } }).catch(() => {});
 
  let bought;
  try {
@@ -7339,9 +7376,10 @@ app.post('/api/numbers/server2/buy', auth, async (req, res) => {
  bought = await grizzlyRequest('getNumberV2', buyParams);
  } catch (e) {
  SystemError.create({ source: 'grizzly', message: `getNumberV2 failed: ${e.message}`, detail: `service=${service} country=${country} maxPrice=${maxPrice}`, context: { userId: user._id } }).catch(() => {});
+ await _refundS2();
  return res.status(400).json({ error: e.message });
  }
- if (!bought || !bought.phoneNumber) return res.status(400).json({ error: 'Provider did not return a number — nothing was charged, please try again.' });
+ if (!bought || !bought.phoneNumber) { await _refundS2(); return res.status(400).json({ error: 'Provider did not return a number — nothing was charged, please try again.' }); }
 
  const services = await getGrizzlyServices();
  const countries = await getGrizzlyCountries();
@@ -7355,8 +7393,6 @@ app.post('/api/numbers/server2/buy', auth, async (req, res) => {
  expiresAt: new Date(Date.now() + NUMBER_RENTAL_WINDOW_MS),
  server: 'server2', grizzlyActivationId: String(bought.activationId), operator: operator || 'any'
  });
- user.balance = (user.balance || 0) - chargeAmount;
- await user.save();
  await Transaction.create({ userId: user._id, type: 'purchase', amount: chargeAmount, description: `Rented ${serviceName} number (${countryName}) — Server 2`, status: 'success' });
  await creditReferralCommission(user, chargeAmount, `${serviceName} number (${countryName})`);
 
