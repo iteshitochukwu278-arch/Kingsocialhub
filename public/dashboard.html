@@ -114,6 +114,10 @@
     .dsh-svc-icon{width:48px;height:48px;border-radius:14px;display:flex;align-items:center;justify-content:center}
     .dsh-svc-icon svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
     .dsh-svc-label{font-size:11.5px;font-weight:700;color:var(--text);text-align:center;line-height:1.3}
+    .dsh-features-card{padding:10px 6px}
+    .dsh-features-grid{display:grid;grid-template-columns:repeat(4,1fr);grid-template-rows:repeat(2,auto);gap:4px 0}
+    .dsh-features-grid .dsh-svc-item{padding:10px 4px;min-height:98px;justify-content:flex-start}
+    .dsh-features-grid .dsh-svc-label{font-size:11px}
     .dsh-svc-badge{font-size:9px;font-weight:800;padding:1px 5px;border-radius:4px;background:#ef4444;color:#fff;margin-top:-4px}
 
     /* ── SERVICE ICON COLORS ─────────────────*/
@@ -250,6 +254,9 @@
         <a class="dd-item" href="/referrals"><span><svg class="icon i-link" aria-hidden="true"><use href="#i-link"/></svg></span> Referrals</a>
         <a class="dd-item" href="/purchases"><span><svg class="icon i-package" aria-hidden="true"><use href="#i-package"/></svg></span> My Purchases</a>
         <a class="dd-item" href="/transactions"><span><svg class="icon i-clipboard" aria-hidden="true"><use href="#i-clipboard"/></svg></span> Transactions</a>
+        <a class="dd-item" href="/tutorials"><span><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M16 10l6-3v10l-6-3"/></g></svg></span> Tutorials</a>
+        <a class="dd-item" href="/giveaways"><span><svg class="icon i-gift" aria-hidden="true"><use href="#i-gift"/></svg></span> Giveaways</a>
+        <a class="dd-item" href="/games"><span><svg class="icon i-gamepad" aria-hidden="true"><use href="#i-gamepad"/></svg></span> Games</a>
         <a class="dd-item" href="/api-docs"><span><svg class="icon i-key" aria-hidden="true"><use href="#i-key"/></svg></span> API Docs</a>
         <a class="dd-item" href="/settings"><span><svg class="icon i-settings" aria-hidden="true"><use href="#i-settings"/></svg></span> Settings</a>
         <a class="dd-item" href="/terms"><span><svg class="icon i-scroll" aria-hidden="true"><use href="#i-scroll"/></svg></span> Terms &amp; Conditions</a>
@@ -302,7 +309,7 @@
   </section>
 
 
-  <!-- FEATURES: 4-column grid right after the balance card -->
+  <!-- FEATURES: 4 x 2 grid right after the balance card -->
   <div class="dsh-card dsh-features-card">
     <div class="dsh-features-grid">
       <a class="dsh-svc-item" href="/buy-number">
@@ -334,49 +341,9 @@
         <div class="dsh-svc-icon svc-emerald"><svg><use href="#i-clipboard"/></svg></div>
         <span class="dsh-svc-label">My Purchases</span>
       </a>
-      <a class="dsh-svc-item" href="/transactions">
-        <div class="dsh-svc-icon svc-sky"><svg><use href="#i-history"/></svg></div>
-        <span class="dsh-svc-label">Transactions</span>
-      </a>
-      <a class="dsh-svc-item" href="/number-history">
-        <div class="dsh-svc-icon svc-teal"><svg><use href="#i-number-history"/></svg></div>
-        <span class="dsh-svc-label">Num History</span>
-      </a>
-      <a class="dsh-svc-item" href="/giveaways">
-        <div class="dsh-svc-icon svc-orange"><svg><use href="#i-gift"/></svg></div>
-        <span class="dsh-svc-label">Giveaways</span>
-      </a>
-      <a class="dsh-svc-item" href="/games">
-        <div class="dsh-svc-icon svc-rose"><svg><use href="#i-gamepad"/></svg></div>
-        <span class="dsh-svc-label">Games</span>
-      </a>
-      <a class="dsh-svc-item" href="/groups">
-        <div class="dsh-svc-icon svc-purple"><svg><use href="#i-users"/></svg></div>
-        <span class="dsh-svc-label">Group Chat</span>
-      </a>
-      <a class="dsh-svc-item" href="/messages">
-        <div class="dsh-svc-icon svc-blue"><svg><use href="#i-message-circle"/></svg></div>
-        <span class="dsh-svc-label">Messages</span>
-      </a>
-      <a class="dsh-svc-item" href="/referrals">
-        <div class="dsh-svc-icon svc-amber"><svg><use href="#i-link"/></svg></div>
-        <span class="dsh-svc-label">Referrals</span>
-      </a>
-      <a class="dsh-svc-item" href="/support">
-        <div class="dsh-svc-icon svc-teal"><svg><use href="#i-headset"/></svg></div>
-        <span class="dsh-svc-label">Support</span>
-      </a>
-      <a class="dsh-svc-item" href="/api-docs">
-        <div class="dsh-svc-icon svc-indigo"><svg><use href="#i-key"/></svg></div>
-        <span class="dsh-svc-label">API Docs</span>
-      </a>
-      <a class="dsh-svc-item" href="/notifications">
-        <div class="dsh-svc-icon svc-rose"><svg><use href="#i-bell"/></svg></div>
-        <span class="dsh-svc-label">Alerts</span>
-      </a>
-      <a class="dsh-svc-item" href="/settings">
-        <div class="dsh-svc-icon svc-slate"><svg><use href="#i-settings"/></svg></div>
-        <span class="dsh-svc-label">Settings</span>
+      <a class="dsh-svc-item" href="/tutorials" aria-label="Video tutorials">
+        <div class="dsh-svc-icon svc-teal"><svg viewBox="0 0 24 24"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M16 10l6-3v10l-6-3"/></svg></div>
+        <span class="dsh-svc-label">Tutorials</span>
       </a>
     </div>
   </div>
