@@ -726,13 +726,13 @@ const grizzlyAxios = axios.create({ timeout: 20000 });
 
 // Plain-text error strings Grizzly answers with instead of JSON.
 const GRIZZLY_ERRORS = {
-  BAD_KEY: 'Number provider rejected our API key — contact support.',
-  BAD_ACTION: 'Number provider rejected the request.',
-  NO_BALANCE: 'Number provider wallet is empty — please contact support.',
-  NO_NUMBERS: 'No numbers available for that selection right now — try another country or provider.',
+  BAD_KEY: 'This server is temporarily unavailable — please try again later.',
+  BAD_ACTION: 'The request was rejected — please try again.',
+  NO_BALANCE: 'This server is temporarily unable to sell numbers — please try again later or use the other server.',
+  NO_NUMBERS: 'No numbers available for that selection right now — try another country or service.',
   WRONG_SERVICE: 'That service is not available for sale — pick another one.',
   SERVICE_UNAVAILABLE_REGION: 'That service is blocked in this region right now.',
-  NO_ACTIVATION: 'That order no longer exists on the provider side.',
+  NO_ACTIVATION: 'That order no longer exists.',
   EARLY_CANCEL_DENIED: 'You can only cancel 2 minutes after buying the number.'
 };
 
@@ -744,7 +744,7 @@ async function grizzlyRequest(action, params = {}) {
   try {
     res = await grizzlyAxios.get(GRIZZLY_BASE_URL, { params: query });
   } catch (e) {
-    const err = new Error('Could not reach the number provider — please try again shortly.');
+    const err = new Error('Could not reach the server — please try again shortly.');
     err.grizzlyCode = 'NETWORK';
     throw err;
   }
@@ -759,7 +759,7 @@ async function grizzlyRequest(action, params = {}) {
       throw err;
     }
     if (/^[A-Z_]+$/.test(trimmed) && !trimmed.startsWith('STATUS_') && !trimmed.startsWith('ACCESS_')) {
-      const err = new Error(`Number provider said: ${trimmed}`);
+      const err = new Error(`Server said: ${trimmed}`);
       err.grizzlyCode = trimmed;
       throw err;
     }
@@ -6160,7 +6160,7 @@ async function expireStaleNumberOrder(listing) {
    await releaseNumberOnProvider(listing);
    const expired = await NumberListing.findOneAndUpdate(
      { _id: listing._id, status: 'sold', code: '' },
-     { $set: { status: 'expired', expiredAt: new Date(), providerCancelled: !!listing.providerCancelled, providerCancelDetail: listing.providerCancelDetail || '' } },
+     { $set: { status: 'expired', expiredAt: new Date(), providerCancelDetail: listing.providerCancelDetail || '' } },
      { new: true }
    );
    if (expired) {
@@ -6199,6 +6199,30 @@ async function retryFailedNovaCancellations() {
     }
   } catch (e) { console.error('[nova-cancel-retry] error:', e.message); }
   finally { _novaCancelRetryRunning = false; }
+}
+// Server 2 orders already refunded to the customer whose upstream cancel was refused (e.g. the
+// 2-minute early-cancel rule) — keep retrying so the number is genuinely closed on the other side too.
+let _g2CancelRetryRunning = false;
+async function retryFailedGrizzlyCancellations() {
+  if (_g2CancelRetryRunning || !GRIZZLY_API_KEY || mongoose.connection.readyState !== 1) return;
+  _g2CancelRetryRunning = true;
+  try {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const rows = await NumberListing.find({
+      grizzlyActivationId: { $nin: ['', null] }, status: { $in: ['cancelled', 'expired'] },
+      providerCancelled: false, providerCancelAttempts: { $lt: 12 },
+      $or: [{ cancelledAt: { $gte: since } }, { expiredAt: { $gte: since } }]
+    }).limit(25);
+    for (const l of rows) {
+      let ok = false, detail = '';
+      try {
+        const raw = String(await grizzlyRequest('setStatus', { id: l.grizzlyActivationId, status: 8 }) || '').trim();
+        ok = /ACCESS_CANCEL|ACCESS_ACTIVATION/i.test(raw); detail = raw;
+      } catch (e) { detail = String(e.message || e); if (e.grizzlyCode === 'NO_ACTIVATION') ok = true; }
+      await NumberListing.updateOne({ _id: l._id }, { $set: { providerCancelled: ok, providerCancelDetail: detail.slice(0, 200) }, $inc: { providerCancelAttempts: 1 } });
+    }
+  } catch (e) { console.error('[g2-cancel-retry] error:', e.message); }
+  finally { _g2CancelRetryRunning = false; }
 }
 // Orders whose Nova outcome was unclear (timeout/5xx on both attempts). The wallet stays debited until an admin decides.
 app.get('/api/admin/numbers/needs-review', anyAdminAuth, async (req, res) => {
@@ -6421,14 +6445,22 @@ app.get('/api/nova/balance', adminAuth, async (req, res) => {
 // ── End NovaSolution integration ────────────────────────────────────────────
 
 
+// Admin "Server 1 OFF" switch — blocks every Server 1 browse/buy call for customers.
+async function server1OffGuard(res) {
+ const cfg = await getNumberServerConfig();
+ if (!cfg.server1Enabled) { res.status(400).json({ error: 'Server 1 is switched off right now — please use Server 2.', serverOff: true }); return true; }
+ return false;
+}
 app.get('/api/numbers/options', async (req, res) => {
  try {
+ if (await server1OffGuard(res)) return;
  const rows = await NumberPricing.find({ enabled: true }).sort({ country: 1, provider: 1 });
  res.json(rows.map(r => ({ id: r._id, provider: r.provider, country: r.country, price: r.price, available: true })));
  } catch (e) { res.status(500).json({ error: 'Failed to load numbers' }); }
 });
 app.get('/api/numbers/nova-servers', optionalAuth, async (req, res) => {
  try {
+   if (await server1OffGuard(res)) return;
    // 'usa' scope = servers that sell USA numbers; 'global' scope = all-countries servers.
    // Keep the provider's own server names (e.g. "USA Server 1"), minus any brand word.
    const scopes = await Promise.allSettled(['usa', 'global'].map(scope => novaGetCatalog({ scope })));
@@ -6460,6 +6492,7 @@ app.get('/api/numbers/nova-servers', optionalAuth, async (req, res) => {
 });
 app.get('/api/numbers/live-countries', optionalAuth, async (req, res) => {
  try {
+   if (await server1OffGuard(res)) return;
    const usa = await novaGetCatalog({ scope: 'usa' });
    const global = await novaGetCatalog({ scope: 'global' });
    const rows = [...novaCountryRows(usa), ...novaCountryRows(global)];
@@ -6587,6 +6620,7 @@ app.get('/api/admin/numbers/sync-status', anyAdminAuth, async (req, res) => {
 });
 app.get('/api/numbers/live-services', optionalAuth, async (req, res) => {
  try {
+   if (await server1OffGuard(res)) return;
    const country = String(req.query.country || '').trim();
    if (!country) return res.status(400).json({ error: 'country is required' });
    const serverId = Number(req.query.serverId || req.query.server_id || 0);
@@ -6651,7 +6685,7 @@ async function novaPlaceOrder(serviceId, idempotencyKey) {
 // pricing: 'customer' (normal markup) or 'api' (apiProfitPercent % of the markup).
 async function novaPurchaseNumber({ userId, serviceId, serverId, countryCode, expectedPrice, pricing }) {
   const cfg = await getNumberServerConfig();
-  if (!cfg.server1Enabled) throw novaHttpError(400, 'Number purchases are temporarily disabled.');
+  if (!cfg.server1Enabled) throw novaHttpError(400, 'Server 1 is switched off right now — please use Server 2.');
   if (!Number.isInteger(serviceId) || serviceId <= 0 || !countryCode || !Number.isInteger(serverId) || serverId <= 0) {
     throw novaHttpError(400, 'Select a server, country and service before purchasing.');
   }
@@ -6755,7 +6789,7 @@ function novaPurchaseErrorResponse(res, e) {
   // A provider-side 401/403 means OUR Nova key is wrong; never send that to the customer as 401
   // (the browser would treat it as "you are logged out").
   if (e.provider && (st === 401 || st === 403)) st = 502;
-  const body = { error: e.message || 'Failed to buy number from the provider.' };
+  const body = { error: e.message || 'Failed to buy number — please try again.' };
   if (typeof e.code === 'string') body.code = e.code;
   if (e.newPrice) body.newPrice = e.newPrice;
   if (e.orderId) body.orderId = e.orderId;
@@ -6812,8 +6846,8 @@ app.get('/api/numbers/status/:orderId', auth, async (req, res) => {
  status: listing.code ? 'delivered' : listing.status === 'sold' ? 'pending' : listing.status,
  code: listing.code, expiresAt: listing.expiresAt, createdAt: listing.soldAt || listing.createdAt,
  server: listing.server || 'server1', sellPrice: listing.sellPrice,
- providerError: listing.providerError || '', providerErrorAt: listing.providerErrorAt || null,
- codeAddedAt: listing.codeAddedAt || null, cancelledAt: listing.cancelledAt || null, expiredAt: listing.expiredAt || null, operator: listing.operator || '', providerCancelled: !!listing.providerCancelled,
+ 
+ codeAddedAt: listing.codeAddedAt || null, cancelledAt: listing.cancelledAt || null, expiredAt: listing.expiredAt || null, operator: listing.operator || '',
  refunded: listing.status === 'expired' || listing.status === 'cancelled' ? listing.sellPrice : null
  });
  } catch (e) { res.status(500).json({ error: 'Failed to check status' }); }
@@ -6823,18 +6857,19 @@ app.post('/api/numbers/cancel/:orderId', auth, async (req, res) => {
  const listing = await NumberListing.findOne({ _id: req.params.orderId, soldTo: req.user._id });
  if (!listing) return res.status(404).json({ error: 'Order not found' });
  if (listing.status !== 'sold' || listing.code) return res.status(400).json({ error: 'This order can no longer be cancelled' });
- const released = await releaseNumberOnProvider(listing);
- const cancelled = await NumberListing.findOneAndUpdate({ _id: listing._id, soldTo: req.user._id, status: 'sold', code: '' }, { $set: { status: 'cancelled', cancelledAt: new Date(), providerCancelled: !!released?.ok, providerCancelDetail: String(released?.detail || '').slice(0, 200) } }, { new: true });
+ // Try the upstream cancel up to 3 times so the number really is released. The customer is refunded
+ // regardless, and anything still open is retried in the background (see retryFailedProviderCancellations).
+ let released = await releaseNumberOnProvider(listing);
+ for (let i = 0; i < 2 && !released?.ok; i++) {
+   if (/NO_ACTIVATION|no longer exists|already/i.test(String(released?.detail || ''))) { released = { ok: true, detail: 'already closed' }; break; }
+   await new Promise(r => setTimeout(r, 1500));
+   released = await releaseNumberOnProvider(listing);
+ }
+ const cancelled = await NumberListing.findOneAndUpdate({ _id: listing._id, soldTo: req.user._id, status: 'sold', code: '' }, { $set: { status: 'cancelled', cancelledAt: new Date(), providerCancelled: !!released?.ok, providerCancelDetail: String(released?.detail && typeof released.detail === 'string' ? released.detail : '').slice(0, 200) } }, { new: true });
  if (!cancelled) return res.status(409).json({ error: 'This order has already changed state; refresh your order status.' });
  const user = await User.findById(listing.soldTo);
  if (user) { await User.updateOne({ _id: user._id }, { $inc: { balance: listing.sellPrice } }); await Transaction.create({ userId: user._id, type: 'admin_credit', amount: listing.sellPrice, description: `Refund: ${listing.provider} number (${listing.country}) — cancelled by user`, status: 'success' }); }
- res.json({
- status: 'cancelled', refunded: listing.sellPrice,
- providerCancelled: !!released?.ok,
- providerMessage: released?.ok
- ? 'Cancelled on the provider too — the activation is closed on their side.'
- : 'You were refunded in full. The provider did not confirm the cancellation yet; it closes automatically when the number expires.'
- });
+ res.json({ status: 'cancelled', refunded: listing.sellPrice, message: 'Number cancelled — refunded to your wallet in full.' });
  } catch (e) { res.status(500).json({ error: 'Failed to cancel: ' + e.message }); }
 });
 app.get('/api/numbers/my-orders', auth, async (req, res) => {
@@ -6845,8 +6880,8 @@ app.get('/api/numbers/my-orders', auth, async (req, res) => {
  id: l._id, provider: l.provider, country: l.country, phoneNumber: l.phoneNumber,
  status: l.code ? 'delivered' : l.status === 'sold' ? 'pending' : l.status,
  code: l.code, expiresAt: l.expiresAt, createdAt: l.soldAt || l.createdAt, sellPrice: l.sellPrice,
- server: l.server || 'server1', providerError: l.providerError || '', providerErrorAt: l.providerErrorAt || null,
- codeAddedAt: l.codeAddedAt || null, cancelledAt: l.cancelledAt || null, expiredAt: l.expiredAt || null, operator: l.operator || '', providerCancelled: !!l.providerCancelled,
+ server: l.server || 'server1', 
+ codeAddedAt: l.codeAddedAt || null, cancelledAt: l.cancelledAt || null, expiredAt: l.expiredAt || null, operator: l.operator || '',
  refunded: l.status === 'expired' || l.status === 'cancelled' ? l.sellPrice : null
  })));
  } catch (e) { res.status(500).json({ error: 'Failed to load orders' }); }
@@ -6903,7 +6938,7 @@ app.get('/api/numbers/my-orders/search', auth, async (req, res) => {
  status: l.code ? 'delivered' : l.status === 'sold' ? 'pending' : l.status,
  code: l.code, expiresAt: l.expiresAt, createdAt: l.soldAt || l.createdAt, sellPrice: l.sellPrice,
  server: l.server || 'server1',
- codeAddedAt: l.codeAddedAt || null, cancelledAt: l.cancelledAt || null, expiredAt: l.expiredAt || null, operator: l.operator || '', providerCancelled: !!l.providerCancelled,
+ codeAddedAt: l.codeAddedAt || null, cancelledAt: l.cancelledAt || null, expiredAt: l.expiredAt || null, operator: l.operator || '',
  refunded: l.status === 'expired' || l.status === 'cancelled' ? l.sellPrice : null
  }))
  });
@@ -7084,7 +7119,7 @@ app.get('/api/admin/numbers/orders', anyAdminAuth, async (req, res) => {
  id: l._id, server: l.server || 'server1', provider: l.provider, country: l.country,
  phoneNumber: l.phoneNumber, sellPrice: l.sellPrice, cost: l.cost,
  status: l.code ? 'delivered' : l.status === 'sold' ? 'pending' : l.status,
- code: l.code, providerError: l.providerError || '', providerErrorAt: l.providerErrorAt || null,
+ code: l.code, 
  createdAt: l.soldAt || l.createdAt, expiresAt: l.expiresAt,
  user: l.soldTo ? (l.soldTo.username || l.soldTo.email || '') : ''
  })));
@@ -7228,7 +7263,7 @@ setInterval(() => { POPULAR_SERVICE_CODES.forEach((c, i) => setTimeout(() => get
 
 async function requireServer2(res) {
  const cfg = await getNumberServerConfig();
- if (!cfg.server2Enabled) { res.status(400).json({ error: 'Server 2 is temporarily switched off — please try Server 1.' }); return null; }
+ if (!cfg.server2Enabled) { res.status(400).json({ error: 'Server 2 is switched off right now — please use Server 1.' }); return null; }
  return cfg;
 }
 
@@ -7341,7 +7376,7 @@ app.post('/api/numbers/server2/buy', auth, async (req, res) => {
  const service = String(req.body.service || '').trim();
  const country = String(req.body.country || '').trim();
  const maxPrice = Number(req.body.maxPrice || 0);
- if (!service || !country || !maxPrice) return res.status(400).json({ error: 'Please re-pick service, country and provider, then try again.' });
+ if (!service || !country || !maxPrice) return res.status(400).json({ error: 'Please re-pick service, country and option, then try again.' });
  // Operator choice — only honoured when the admin turned operator picking on.
  const mode = cfg.server2ProviderMode || 'pools';
  let operator = String(req.body.operator || '').trim().toLowerCase();
@@ -7357,10 +7392,10 @@ app.post('/api/numbers/server2/buy', auth, async (req, res) => {
  const data = await grizzlyRequest('getPricesV2', { service, country });
  const tiers = data?.[country]?.[service] || {};
  const tierKey = Object.keys(tiers).find(k => Math.abs(Number(k) - maxPrice) < 0.0001);
- if (!tierKey || !Number(tiers[tierKey])) return res.status(400).json({ error: 'That provider just sold out — please pick another one.' });
+ if (!tierKey || !Number(tiers[tierKey])) return res.status(400).json({ error: 'That option just sold out — please pick another one.' });
  if (cfg.server2HideLowPools) {
  const lowPools = Object.entries(tiers).filter(([, c]) => Number(c) > 0).map(([k]) => Number(k)).sort((a, b) => a - b).slice(0, 3);
- if (lowPools.some(k => Math.abs(k - maxPrice) < 0.0001)) return res.status(400).json({ error: 'That provider is not available right now — please pick another one.' });
+ if (lowPools.some(k => Math.abs(k - maxPrice) < 0.0001)) return res.status(400).json({ error: 'That option is not available right now — please pick another one.' });
  }
  const { price: chargeAmount, costNgn } = grizzlyPriceNgn(maxPrice, cfg);
 
@@ -8392,6 +8427,7 @@ setTimeout(() => {
   setInterval(reconcilePaystackVADeposits, 2 * 60 * 1000);
   setInterval(checkAllPendingDeposits, 30 * 1000);
   setInterval(retryFailedNovaCancellations, 5 * 60 * 1000);
+  setInterval(retryFailedGrizzlyCancellations, 60 * 1000);
 }, 5000);
 // ═══ MACHINE TRANSLATION (whole-site language switch) ═════════════════════
 // The phrase table in public/js/i18n.js covers the common UI strings instantly
