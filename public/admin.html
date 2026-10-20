@@ -383,6 +383,15 @@ tr:hover td{background:rgba(255,255,255,.035)}
         <div id="selfCheckResults" class="self-check-grid"></div>
       </div>
     </div>
+    <div id="tab-switches" class="tab-panel">
+      <div class="sec">
+        <div class="sec-title">Feature ON/OFF switches</div>
+        <div class="info-box">Turn any feature OFF at any time. It takes effect immediately: customers see a maintenance message and can no longer buy from it. Turn it back ON the same way.</div>
+        <div id="fsList" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px">Loading…</div>
+        <div id="fsFeedback" class="form-feedback"></div>
+      </div>
+    </div>
+
     <div id="tab-ops" class="tab-panel">
       <div class="sec">
         <div class="sec-title"><svg class="icon i-bar-chart" aria-hidden="true"><use href="#i-bar-chart"/></svg> Operations overview</div>
@@ -2089,6 +2098,7 @@ function doLogout(){ sessionStorage.removeItem(SK); sessionStorage.removeItem(SK
 // array, so a section can never exist in one menu and be missing from the other.
 const ADMIN_NAV = [
   { group:'Overview', items:[
+    { tab:'switches', icon:'i-plug', label:'Feature ON/OFF switches', accent:'accent-green', keywords:'switch on off turn disable enable maintenance boost 1 boost 2 marketplace 2 marketplace 3 server 1 server 2 numbers' },
     { tab:'dashboard', icon:'i-bar-chart',    label:'Dashboard' },
     { tab:'ops',       icon:'i-activity',     label:'Operations (numbers, boost, chat)',
       keywords:'operations overview stock numbers boost balance live chat pending waiting' },
@@ -2237,6 +2247,7 @@ function switchTab(name,el) {
   if(name==='transactions') loadTxns();
   if(name==='support')      { loadSupport(); loadAdminLiveChats(); startLiveSupportPolling(); }
   if(name!=='support')      stopLiveSupportPolling();
+  if(name==='switches')     loadFeatureSwitches();
   if(name==='ops')          { loadOpsOverview(); startOpsPolling(); }
   if(name!=='ops')          stopOpsPolling();
 
@@ -4206,6 +4217,42 @@ async function clearDepositTutorial(method) {
 }
 // ── BUY NUMBERS (owner + staff) ───────────────────────────────────
 // ── Server switches, ₦ rate, profit ladder, profit report ──────────────────────────────────
+// ── Feature ON/OFF switches (Boost 1/2, Marketplace 1/2/3, Number Server 1/2) ──
+const FS_ITEMS = [
+  { id:'boost1',  label:'Boost 1',       get:'/api/admin/boost/settings',     put:'/api/admin/boost/settings',     read:c=>c.enabled,        body:v=>({enabled:v}) },
+  { id:'boost2',  label:'Boost 2',       get:'/api/admin/boost2/config',      put:'/api/admin/boost2/config',      read:c=>c.enabled,        body:v=>({enabled:v}) },
+  { id:'market1', label:'Marketplace 1', get:'/api/admin/market2/config',     put:'/api/admin/market2/config',     read:c=>c.market1Enabled, body:v=>({market1Enabled:v}) },
+  { id:'market2', label:'Marketplace 2', get:'/api/admin/market2/config',     put:'/api/admin/market2/config',     read:c=>c.market2Enabled, body:v=>({market2Enabled:v}) },
+  { id:'market3', label:'Marketplace 3', get:'/api/admin/market3/config',     put:'/api/admin/market3/config',     read:c=>c.market3Enabled, body:v=>({market3Enabled:v}) },
+  { id:'num1',    label:'Buy Number — Server 1', get:'/api/admin/numbers/server-config', put:'/api/admin/numbers/server-config', read:c=>c.server1Enabled, body:v=>({server1Enabled:v}) },
+  { id:'num2',    label:'Buy Number — Server 2', get:'/api/admin/numbers/server-config', put:'/api/admin/numbers/server-config', read:c=>c.server2Enabled, body:v=>({server2Enabled:v}) }
+];
+const _fsState = {};
+async function loadFeatureSwitches() {
+  const box = document.getElementById('fsList'); if (!box) return;
+  const cache = {};
+  for (const it of FS_ITEMS) {
+    try { cache[it.get] = cache[it.get] || await aFetch(it.get); _fsState[it.id] = !!it.read(cache[it.get]); }
+    catch (e) { _fsState[it.id] = null; }
+  }
+  box.innerHTML = FS_ITEMS.map(it => {
+    const on = _fsState[it.id];
+    const st = on === null ? '⚠️ Could not load' : on ? '🟢 ON — customers can use it' : '🔴 OFF — maintenance shown';
+    return `<div style="padding:14px;border-radius:12px;background:rgba(127,127,127,.12)">
+      <b>${it.label}</b><div style="margin:8px 0;font-weight:700">${st}</div>
+      <button class="btn-primary" ${on === null ? 'disabled' : ''} onclick="toggleFeatureSwitch('${it.id}')">${on ? 'Turn OFF' : 'Turn ON'}</button></div>`;
+  }).join('');
+}
+async function toggleFeatureSwitch(id) {
+  const it = FS_ITEMS.find(x => x.id === id); const fb = document.getElementById('fsFeedback');
+  const cur = !!_fsState[id];
+  if (cur && !confirm('Turn OFF ' + it.label + '? Customers will not be able to use it.')) return;
+  try {
+    await aFetch(it.put, 'PUT', it.body(!cur));
+    fb.textContent = it.label + (cur ? ' is now OFF.' : ' is now ON.'); fb.className = 'form-feedback ok';
+    loadFeatureSwitches();
+  } catch (e) { fb.textContent = 'Error: ' + e.message; fb.className = 'form-feedback err'; }
+}
 async function loadQuickServerSwitches(c) {
   try {
     c = c || await aFetch('/api/admin/numbers/server-config');
