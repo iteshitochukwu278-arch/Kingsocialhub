@@ -561,7 +561,7 @@ if (typeof window.kslConfirm !== 'function') {
     <h3>Choose your number <span class="stock-chip">Server 1</span></h3>
 
     <div class="srv-note" style="margin-bottom:12px;border:1px solid var(--gold,#f4b942);border-radius:12px;padding:10px 12px">
-      <b>Heads up:</b> Server 1 is <b>not only USA WhatsApp anymore</b> — it now has <b>USA / Canada numbers for many different services</b>, and every other country the provider has in stock. Prices are live and shown before you pay.
+      <b>Heads up:</b> Server 1 is <b>not only USA WhatsApp anymore</b> — it now has <b>USA / Canada numbers for many different services</b>, and every other country we have in stock. Prices are live and shown before you pay.
     </div>
 
     <div id="numEmptyState" class="empty" style="display:none">
@@ -685,7 +685,7 @@ if (typeof window.kslConfirm !== 'function') {
         <p class="srv-note" style="margin:-2px 0 10px">“Any operator” gives the best chance of getting a number instantly. Pick a specific operator only if the service you are verifying needs it.</p>
       </div>
 
-      <div class="step-label" id="g2PoolStepLabel">Step 4 — Pick a provider (price pool)</div>
+      <div class="step-label" id="g2PoolStepLabel">Step 4 — Pick an option (price pool)</div>
       <div class="pool-guide">
         <span>🐢 <b>Pool 1–3:</b> lower SMS delivery rate. Use only when price matters most.</span>
         <span>⚡ <b>Pool 4 and above:</b> recommended for faster SMS delivery.</span>
@@ -698,7 +698,7 @@ if (typeof window.kslConfirm !== 'function') {
       <div class="select-tile">
  <div class="st-icon"><svg class="icon i-plug" aria-hidden="true"><use href="#i-plug"/></svg></div>
         <div class="st-body">
-          <div class="st-label">Select Provider</div>
+          <div class="st-label">Select Option</div>
           <div class="st-value" id="g2ProviderValueText">Select a country first</div>
         </div>
         <div class="st-chev">⌄</div>
@@ -949,13 +949,13 @@ function renderS1Services(list, keepId) {
   const providerValueText = document.getElementById('numProviderValueText');
   numServices = list;
   renderS1PopularChips();
-  providerSelect.innerHTML = '<option value="">Select a provider…</option>' +
+  providerSelect.innerHTML = '<option value="">Select a service…</option>' +
     list.map(s => `<option value="${esc(s.serviceId)}" data-name="${esc(s.provider)}" data-icon="${esc(s.icon || '')}" data-meta="${esc(PRICE(s.price))}">${esc(s.emoji || '')} ${esc(s.provider)} — ${PRICE(s.price)}</option>`).join('');
   providerSelect.disabled = false;
   const ss = document.getElementById('s1ServiceSearch'); ss.disabled = false;
   if (keepId && list.some(x => x.serviceId === keepId)) { providerSelect.value = keepId; onNumProviderChange(); }
   else {
-    providerValueText.textContent = 'Select a provider…';
+    providerValueText.textContent = 'Select a service…';
     document.getElementById('numPriceBox').style.display = 'none';
     document.getElementById('numBuyBtn').disabled = true;
     ss.value = '';
@@ -1129,7 +1129,7 @@ async function buyNumber() {
   const fb = document.getElementById('numFeedback');
   const btn = document.getElementById('numBuyBtn');
   const match = numServices.find(s => s.serviceId === serviceId);
-  if (!serviceId || !country || !match) return setFb(fb, 'Please select a country and provider', 'err');
+  if (!serviceId || !country || !match) return setFb(fb, 'Please select a country and service', 'err');
   if (!bnToken) { window.location.href = '/login'; return; }
   const _srv = numNovaServers.find(x => String(x.id) === String(selectedNovaServerId));
   const _cty = numCountries.find(x => x.code === country);
@@ -1240,10 +1240,8 @@ async function cancelNumberOrder() {
   try {
     const r = await req(`/api/numbers/cancel/${numCurrentOrder.orderId}`, 'POST', null, true);
     clearInterval(numPollTimer); clearInterval(numCountdownTimer);
- statusNote.textContent = r?.providerCancelled
-      ? 'Cancelled on the provider too — refunded to your wallet in full.'
-      : 'Refunded to your wallet in full. The provider order closes automatically.';
-    showToast(r?.providerMessage || 'Cancelled and refunded');
+ statusNote.textContent = 'Number cancelled — refunded to your wallet in full.';
+    showToast('Number cancelled and refunded');
     statusNote.className = 'status-note ok';
     cancelBtn.style.display = 'none';
     loadNumOrders();
@@ -1432,12 +1430,12 @@ const SERVER_GUIDE = {
       'Search and pick the <b>service</b> (WhatsApp, Telegram, Google…).',
       'Search and pick the <b>country</b>.',
       'If operator choice is on, pick <b>Any operator</b> (recommended) or a specific one.',
-      'Pick a provider pool. <b>Pool 4 and above is recommended for faster SMS delivery</b>; Pools 1–3 have a lower SMS delivery rate.',
+      'Pick a price pool. <b>Pool 4 and above is recommended for faster SMS delivery</b>; Pools 1–3 have a lower SMS delivery rate.',
       'Tap <b>Buy This Number</b>, confirm the live price, and the number is reserved for you.',
       'Your code appears automatically in <b>Active Numbers</b>; no code in time means an automatic refund.'
     ],
     notifs: [
-      'Live stock counter and "checked at" time for the provider you picked',
+      'Live stock counter and "checked at" time for the option you picked',
       'A confirmation prompt if the price changed before you paid',
       'Instant on-page alert when your OTP code arrives',
       'Automatic refund notice, plus an immediate wallet balance update'
@@ -1819,7 +1817,7 @@ function applyG2ProviderMode() {
   const poolLabel = document.getElementById('g2PoolStepLabel');
   const showOps = g2ProviderMode === 'operators' || g2ProviderMode === 'both';
   if (wrap) wrap.style.display = showOps ? 'block' : 'none';
-  if (poolLabel) poolLabel.textContent = showOps ? 'Step 4 — Pick a provider (price pool)' : 'Step 3 — Pick a provider (price pool)';
+  if (poolLabel) poolLabel.textContent = showOps ? 'Step 4 — Pick an option (price pool)' : 'Step 3 — Pick an option (price pool)';
 }
 
 // Loads the operators Grizzly sells for the chosen country.
@@ -1931,7 +1929,7 @@ async function fetchG2Providers(service, country) {
 function renderG2Providers(keepSelection) {
   const providerSel = document.getElementById('g2ProviderSelect');
   const prev = keepSelection ? g2Providers[Number(providerSel.value)]?.maxPrice : null;
-  providerSel.innerHTML = '<option value="">Select a provider…</option>' +
+  providerSel.innerHTML = '<option value="">Select an option…</option>' +
     g2Providers.map((p, i) => {
       const poolNo = Number(String(p.label || '').match(/Pool\s*(\d+)/i)?.[1] || i + 1);
       const speed = poolNo >= 4 ? '⚡ Recommended · faster SMS' : '🐢 Lower SMS rate';
@@ -1940,7 +1938,7 @@ function renderG2Providers(keepSelection) {
   providerSel.disabled = false;
   const keepIdx = prev == null ? -1 : g2Providers.findIndex(p => Math.abs(p.maxPrice - prev) < 0.0001);
   if (keepIdx >= 0) { providerSel.value = String(keepIdx); onG2ProviderChange(); }
-  else { document.getElementById('g2ProviderValueText').textContent = 'Select a provider…'; onG2ProviderChange(); }
+  else { document.getElementById('g2ProviderValueText').textContent = 'Select a service…'; onG2ProviderChange(); }
   return keepIdx;
 }
 
@@ -1956,7 +1954,7 @@ async function refreshG2Availability(manual) {
     const fresh = await fetchG2Providers(service, country);
     g2Providers = fresh;
     if (!fresh.length) {
-      resetG2Providers('No providers in stock — pick another country');
+      resetG2Providers('Nothing in stock — pick another country');
       setG2Stock('Out of stock as of ' + new Date().toLocaleTimeString());
       return;
     }
@@ -1964,11 +1962,11 @@ async function refreshG2Availability(manual) {
     g2LastChecked = new Date();
     const now = g2Providers[keptIdx];
     if (prevPrice != null && keptIdx < 0) {
-      setG2Stock('Your provider just sold out — pick another (checked ' + g2LastChecked.toLocaleTimeString() + ')');
+      setG2Stock('Your option just sold out — pick another (checked ' + g2LastChecked.toLocaleTimeString() + ')');
     } else if (now && prevPrice != null && now.price !== prevPrice) {
       setG2Stock(`Price changed: ${PRICE(prevPrice)} → ${PRICE(now.price)} (checked ${g2LastChecked.toLocaleTimeString()})`);
     } else {
-      setG2Stock(`${fresh.length} provider${fresh.length > 1 ? 's' : ''} in stock · checked ${g2LastChecked.toLocaleTimeString()}`);
+      setG2Stock(`${fresh.length} option${fresh.length > 1 ? 's' : ''} in stock · checked ${g2LastChecked.toLocaleTimeString()}`);
     }
   } catch (e) {
     setG2Stock('Could not check availability — tap to retry');
@@ -2006,13 +2004,13 @@ async function onG2CountryChange() {
     if (!stillCurrent()) return;
     g2Providers = fresh;
     if (!fresh.length) {
-      resetG2Providers('No providers in stock — pick another country');
+      resetG2Providers('Nothing in stock — pick another country');
       setG2Stock('Out of stock right now');
       return;
     }
     renderG2Providers(!!(cached && cached.length));
     g2LastChecked = new Date();
-    setG2Stock(`${g2Providers.length} provider${g2Providers.length > 1 ? 's' : ''} in stock · checked ${g2LastChecked.toLocaleTimeString()}`);
+    setG2Stock(`${g2Providers.length} option${g2Providers.length > 1 ? 's' : ''} in stock · checked ${g2LastChecked.toLocaleTimeString()}`);
     startG2AvailabilityWatch();
   } catch (e) {
     if (cached && cached.length) { setG2Stock('Showing saved stock — tap refresh to re-check'); return; }
@@ -2039,7 +2037,7 @@ async function buyNumberServer2() {
   const fb = document.getElementById('g2Feedback');
   const btn = document.getElementById('g2BuyBtn');
   let p = g2Providers[Number(document.getElementById('g2ProviderSelect').value)];
-  if (!service || !country || !p) return setFb(fb, 'Please select a service, country and provider', 'err');
+  if (!service || !country || !p) return setFb(fb, 'Please select a service, country and option', 'err');
   if (!bnToken) { window.location.href = '/login'; return; }
 
   // FINAL live check — never let anyone confirm payment against a stale price or a sold-out tier.
@@ -2051,8 +2049,8 @@ async function buyNumberServer2() {
     const idx = fresh.findIndex(t => Math.abs(t.maxPrice - wanted) < 0.0001 && t.count > 0);
     if (idx < 0) {
       renderG2Providers(false);
-      setG2Stock('Checked just now — that provider is gone');
-      setFb(fb, 'That provider just sold out. The list below is now live — pick another one.', 'err');
+      setG2Stock('Checked just now — that option is gone');
+      setFb(fb, 'That option just sold out. The list below is now live — pick another one.', 'err');
       return;
     }
     document.getElementById('g2ProviderSelect').value = String(idx);
@@ -2061,7 +2059,7 @@ async function buyNumberServer2() {
     g2LastChecked = new Date();
     setG2Stock(`Verified live · ${p.count} left · ${g2LastChecked.toLocaleTimeString()}`);
     if (p.price !== wasPrice) {
-      if (!await kslConfirm(`Heads up — this provider's price just changed from ${PRICE(wasPrice)} to ${PRICE(p.price)}. Continue at ${PRICE(p.price)}?`)) return;
+      if (!await kslConfirm(`Heads up — this option's price just changed from ${PRICE(wasPrice)} to ${PRICE(p.price)}. Continue at ${PRICE(p.price)}?`)) return;
     } else if (!await kslConfirm(`Buy this number for ${PRICE(p.price)}? ${p.count} in stock right now. It is deducted from your wallet now and automatically refunded if no code arrives in time.`)) {
       return;
     }

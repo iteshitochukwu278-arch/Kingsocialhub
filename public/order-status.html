@@ -5,7 +5,7 @@
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
   <title>Order Status — KingBadBoi Log Sale</title>
-  <meta name="description" content="Track every number you purchased: delivery state, OTP codes, refunds and provider errors — live."/>
+  <meta name="description" content="Track every number you purchased: delivery state, OTP codes, refunds and order status — live."/>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&family=Sora:wght@500;600;700;800&display=swap" rel="stylesheet"/>
   <link rel="stylesheet" href="style.css?v=20260910a"/>
@@ -113,7 +113,7 @@ function AMT(n)   { return window.KLSMoney ? window.KLSMoney.amount(n) : '₦' +
   <div class="page-hero" style="padding:0 0 18px">
     <div class="ph-chip">Order Status</div>
     <h1>Track Your Numbers</h1>
-    <p>Live delivery state for every number you bought — codes, refunds and any error the provider sent back.</p>
+    <p>Live delivery state for every number you bought — codes, refunds and order status.</p>
   </div>
 
   <!-- Server health -->
@@ -127,7 +127,6 @@ function AMT(n)   { return window.KLSMoney ? window.KLSMoney.amount(n) : '₦' +
     <button class="os-chip" data-f="pending" onclick="setOsFilter('pending')">Waiting for code</button>
     <button class="os-chip" data-f="delivered" onclick="setOsFilter('delivered')">Delivered</button>
     <button class="os-chip" data-f="refunded" onclick="setOsFilter('refunded')">Refunded</button>
-    <button class="os-chip" data-f="errors" onclick="setOsFilter('errors')">Provider errors</button>
     <button class="os-chip" onclick="loadOsOrders(true)">Refresh</button>
   </div>
 
@@ -165,7 +164,7 @@ function osTimeline(o) {
   const failed = o.status === 'expired' || o.status === 'cancelled';
   const steps = [
     { label: 'Order queued', at: o.createdAt, state: 'done' },
-    { label: 'Number issued by provider', at: o.createdAt, state: 'done' },
+    { label: 'Number issued', at: o.createdAt, state: 'done' },
     { label: o.code ? 'OTP sent to the number' : 'Waiting for OTP',
       at: o.codeAddedAt, state: o.code ? 'done' : failed ? 'fail' : 'active' },
     { label: o.code ? 'Code verified & shown to you' : 'Verification',
@@ -226,7 +225,6 @@ async function loadOsOrders(manual) {
 function osMatches(o) {
   if (osFilter === 'all') return true;
   if (osFilter === 'refunded') return o.status === 'expired' || o.status === 'cancelled';
-  if (osFilter === 'errors') return !!o.providerError;
   return o.status === osFilter;
 }
 
@@ -260,8 +258,6 @@ function renderOsOrders() {
         </div>
         ${o.code ? `<div class="os-code">${esc(o.code)}</div>` : ''}
         ${osTimeline(o)}
-        ${o.providerError ? `<div class="os-err"><b>Provider error:</b> ${esc(o.providerError)}${o.providerErrorAt ? ` <span style="opacity:.75">(${new Date(o.providerErrorAt).toLocaleTimeString('en-NG')})</span>` : ''}<br>
-          We keep retrying automatically. If no code arrives before the timer ends, your wallet is refunded in full.</div>` : ''}
         <div class="os-actions">
           <button onclick="osCopy('${esc(o.phoneNumber)}')">Copy number</button>
           ${o.code ? `<button onclick="osCopy('${esc(o.code)}')">Copy code</button>` : ''}
@@ -280,9 +276,7 @@ async function osCancel(id) {
   if (!await kslConfirm('Cancel this number and get refunded? You will not be able to receive a code on it afterward.')) return;
   try {
     const r = await req(`/api/numbers/cancel/${id}`, 'POST', null, true);
-    showToast(r?.providerCancelled
-      ? 'Cancelled on the provider too — refunded to your wallet'
-      : 'Refunded to your wallet — provider closure pending');
+    showToast('Number cancelled — refunded to your wallet');
     refreshBalance?.();
     loadOsOrders();
   } catch (e) { showToast(e.message, 'err'); }

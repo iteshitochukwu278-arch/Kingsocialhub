@@ -1111,6 +1111,23 @@ tr:hover td{background:rgba(255,255,255,.035)}
     </div>
 
     <div id="tab-numbers" class="tab-panel">
+      <div class="sec" style="border:2px solid var(--accent,#22c55e)">
+        <div class="sec-title">Buy Number Servers — ON / OFF</div>
+        <div class="info-box">Turn a server OFF to stop customers from using it. Takes effect immediately: the server tab is disabled in the customer panel and buying on it is blocked.</div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <div style="flex:1;min-width:220px;padding:12px;border-radius:12px;background:rgba(127,127,127,.12)">
+            <b>Server 1</b>
+            <div id="qsS1State" style="margin:6px 0;font-weight:700">…</div>
+            <button class="btn-primary" id="qsS1Btn" onclick="quickToggleServer('server1Enabled')">…</button>
+          </div>
+          <div style="flex:1;min-width:220px;padding:12px;border-radius:12px;background:rgba(127,127,127,.12)">
+            <b>Server 2</b>
+            <div id="qsS2State" style="margin:6px 0;font-weight:700">…</div>
+            <button class="btn-primary" id="qsS2Btn" onclick="quickToggleServer('server2Enabled')">…</button>
+          </div>
+        </div>
+        <div id="qsFeedback" class="form-feedback"></div>
+      </div>
       <div class="sec">
         <div class="sec-title"><svg class="icon i-plug" aria-hidden="true"><use href="#i-plug"/></svg> Number Servers &amp; Profit Settings</div>
         <div class="info-box"><svg class="icon i-pin" aria-hidden="true"><use href="#i-pin"/></svg>
@@ -4189,9 +4206,36 @@ async function clearDepositTutorial(method) {
 }
 // ── BUY NUMBERS (owner + staff) ───────────────────────────────────
 // ── Server switches, ₦ rate, profit ladder, profit report ──────────────────────────────────
+async function loadQuickServerSwitches(c) {
+  try {
+    c = c || await aFetch('/api/admin/numbers/server-config');
+    window._qsCfg = c;
+    [['qsS1State','qsS1Btn',c.server1Enabled],['qsS2State','qsS2Btn',c.server2Enabled]].forEach(([st,bt,on]) => {
+      const s = document.getElementById(st), b = document.getElementById(bt);
+      if (!s || !b) return;
+      s.textContent = on ? '🟢 ON — customers can buy' : '🔴 OFF — hidden from customers';
+      b.textContent = on ? 'Turn OFF' : 'Turn ON';
+    });
+  } catch (e) {}
+}
+async function quickToggleServer(key) {
+  const fb = document.getElementById('qsFeedback');
+  const cur = !!(window._qsCfg && window._qsCfg[key]);
+  const label = key === 'server1Enabled' ? 'Server 1' : 'Server 2';
+  if (cur && !confirm('Turn OFF ' + label + '? Customers will not be able to buy numbers on it.')) return;
+  try {
+    const body = {}; body[key] = !cur;
+    await aFetch('/api/admin/numbers/server-config', 'PUT', body);
+    fb.textContent = label + (cur ? ' is now OFF.' : ' is now ON.'); fb.className = 'form-feedback ok';
+    await loadQuickServerSwitches();
+    const sel = document.getElementById(key === 'server1Enabled' ? 'nscServer1' : 'nscServer2');
+    if (sel) sel.value = String(!cur);
+  } catch (e) { fb.textContent = 'Error: ' + e.message; fb.className = 'form-feedback err'; }
+}
 async function loadNumberServerConfig() {
   try {
     const c = await aFetch('/api/admin/numbers/server-config');
+    loadQuickServerSwitches(c);
     document.getElementById('nscServer1').value = String(!!c.server1Enabled);
     document.getElementById('nscServer2').value = String(!!c.server2Enabled);
     document.getElementById('nscRate').value = c.usdToNgn || '';
